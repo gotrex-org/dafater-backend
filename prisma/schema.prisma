@@ -1,0 +1,367 @@
+// Dafater (دفاتر) — Postgres schema
+// Migrated from the single-file localStorage app. All monetary balances
+// (party ledger, treasury, stock) are DERIVED from the immutable Transaction
+// log + Adjustment records, exactly like the original app. Nothing is stored
+// pre-aggregated.
+//
+// NOTE: money fields use Float for a clean first-pass scaffold. For production
+// accounting, switch to `Decimal @db.Decimal(14, 2)` (or integer cents).
+
+generator client {
+  provider      = "prisma-client-js"
+  // native = local dev; linux-musl-openssl-3.0.x = node:20-alpine (Docker)
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------- enums -----------------------------
+
+enum PartyRole {
+  CLIENT
+  SUPPLIER
+}
+
+enum PartyType {
+  INVOICE // فاتورة
+  LEDGER // حساب جاري
+}
+
+enum Currency {
+  EGP
+  USD
+}
+
+enum InvoiceKind {
+  SALE // بيع
+  PURCHASE // شراء
+}
+
+enum OrderStatus {
+  NEW
+  DONE
+}
+
+// ----------------------------- auth -----------------------------
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  pinHash   String // bcrypt hash of the 4-digit PIN
+  admin     Boolean  @default(false)
+  // Allowed view/permission keys: dash, invoices, deals, orders, requests,
+  // manifests, entry, inventory, ledger, treasury, settings
+  views     String[] @default([])
+  // Incremented to revoke all outstanding JWTs (e.g. on PIN change / forced logout)
+  tokenVersion Int   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// --------------------------- master data ---------------------------
+
+model Party {
+  id      String     @id @default(cuid())
+  name    String
+  role    PartyRole
+  type    PartyType? // only meaningful for clients
+  phone   String?
+  opening Float      @default(0) // opening balance (+ = owes us)
+  hidden  Boolean    @default(false)
+
+  transactions Transaction[]
+  invoices     Invoice[]
+  dealsAsClient   Deal[] @relation("DealClient")
+  dealsAsSupplier Deal[] @relation("DealSupplier")
+  requests     Request[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+}
+
+model TreasuryAccount {
+  id       String   @id @default(cuid())
+  name     String
+  opening  Float    @default(0)
+  currency Currency @default(EGP)
+
+  transactions      Transaction[] @relation("TxTreasury")
+  transactionsAlt   Transaction[] @relation("TxTreasury2")
+  invoices          Invoice[]
+  deals             Deal[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Warehouse {
+  id   String @id @default(cuid())
+  name String
+
+  invoices    Invoice[]
+  adjustments Adjustment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id   String  @id @default(cuid())
+  name String
+  unit String?
+
+  invoiceItems InvoiceItem[]
+  dealItems    DealItem[]
+  adjustments  Adjustment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ExpenseCategory {
+  id   String @id @default(cuid())
+  name String
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ------------------------- ledger / treasury -------------------------
+// Single source of truth. Every financial movement is a Transaction.
+
+model Transaction {
+  id   String   @id @default(cuid())
+  date DateTime
+  type String // فاتورة بيع / تحصيل / مصروف / تحويل بين الخزائن ... (kept as label)
+
+  party   Party?  @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  partyId String?
+
+  treasury   TreasuryAccount? @relation("TxTreasury", fields: [treasuryId], references: [id], onDelete: Cascade)
+  treasuryId String?
+
+  treasury2   TreasuryAccount? @relation("TxTreasury2", fields: [treasuryId2], references: [id], onDelete: Cascade)
+  treasuryId2 String?
+
+  category   ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId String?
+
+  debit    Float @default(0) // owed to us (party) / paid out
+  credit   Float @default(0) // we owe (party) / received
+  cashIn   Float @default(0) // into treasury
+  cashOut  Float @default(0) // out of treasury
+  cashIn2  Float @default(0) // into treasury2
+  cashOut2 Float @default(0) // out of treasury2
+  expAmt   Float @default(0) // commission/expense amount
+
+  note String?
+
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId String?
+
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([partyId])
+  @@index([treasuryId])
+  @@index([date])
+}
+
+// ----------------------------- invoices -----------------------------
+
+model Invoice {
+  id   String      @id @default(cuid())
+  kind InvoiceKind
+  no   String
+  date DateTime
+
+  party   Party  @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyId String
+
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouseId String
+
+  paid       Float            @default(0)
+  treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId String?
+
+  note String?
+
+  commissionAmount Float?
+  commissionTo     String?
+
+  items        InvoiceItem[]
+  transactions Transaction[]
+  manifests    Manifest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@index([partyId])
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId String
+  qty       Float
+  price     Float
+
+  @@index([invoiceId])
+}
+
+// ------------------------------ deals ------------------------------
+// External pass-through sales (no stock impact).
+
+model Deal {
+  id   String   @id @default(cuid())
+  no   String
+  date DateTime
+
+  client   Party  @relation("DealClient", fields: [clientId], references: [id], onDelete: Restrict)
+  clientId String
+
+  supplier   Party  @relation("DealSupplier", fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierId String
+
+  paidIn     Float            @default(0)
+  paidOut    Float            @default(0)
+  treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId String?
+
+  note String?
+
+  items        DealItem[]
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DealItem {
+  id        String  @id @default(cuid())
+  deal      Deal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId    String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId String
+  qty       Float
+  price     Float
+
+  @@index([dealId])
+}
+
+// -------------------------- stock adjustments --------------------------
+
+model Adjustment {
+  id          String    @id @default(cuid())
+  date        DateTime
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  warehouseId String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   String
+  qty         Float // net change (+/-)
+  note        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([warehouseId])
+  @@index([productId])
+}
+
+// ------------------------------ requests ------------------------------
+
+model Request {
+  id       String   @id @default(cuid())
+  date     DateTime
+  client   Party    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId String
+  note     String?
+  done     Boolean  @default(false)
+  doneDate DateTime?
+
+  items RequestItem[]
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+}
+
+model RequestItem {
+  id        String  @id @default(cuid())
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId String
+  name      String // free text (not linked to Product)
+  qty       Float
+}
+
+// ------------------------------ manifests ------------------------------
+
+model Manifest {
+  id          String   @id @default(cuid())
+  no          String
+  date        DateTime
+  invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId   String?
+  clientName  String
+  vehicleNo   String?
+  driverName  String?
+  driverPhone String?
+  driverNID   String?
+  clearingAgent String?
+  note        String?
+
+  items ManifestItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ManifestItem {
+  id         String   @id @default(cuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId String
+  name       String
+  qty        Float
+}
+
+// -------------------------- public orders --------------------------
+
+model Order {
+  id     String      @id @default(cuid())
+  date   DateTime    @default(now())
+  name   String
+  phone  String?
+  note   String?
+  status OrderStatus @default(NEW)
+
+  items OrderItem[]
+
+  createdAt DateTime @default(now())
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String
+  name    String
+  qty     Float
+}
+
+// ------------------------------ config ------------------------------
+
+model Config {
+  id         Int    @id @default(1) // singleton row
+  orderEmail String @default("yusuftarek.97@gmail.com")
+}
