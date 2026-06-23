@@ -25,6 +25,7 @@ import { ManifestsModule } from './modules/manifests/manifests.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { AppConfigModule } from './modules/config/config.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { AuditModule } from './modules/audit/audit.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     OrdersModule,
     AppConfigModule,
     DashboardModule,
+    AuditModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

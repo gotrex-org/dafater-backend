@@ -19,17 +19,26 @@ export class CreateAdjustmentDto {
 export class AdjustmentsService {
   constructor(private prisma: PrismaService) {}
   findAll(q: PaginationQueryDto, warehouseId?: string) {
+    // warehouseId query param is the public uid -> filter via the relation
     return paginate(this.prisma.adjustment, q, {
-      where: warehouseId ? { warehouseId } : {},
+      where: warehouseId ? { warehouse: { uid: warehouseId } } : {},
       orderBy: { date: 'desc' },
       include: { product: true, warehouse: true },
     });
   }
   create(dto: CreateAdjustmentDto) {
-    return this.prisma.adjustment.create({ data: { ...dto, date: new Date(dto.date) } });
+    const { warehouseId, productId, date, ...rest } = dto;
+    return this.prisma.adjustment.create({
+      data: {
+        ...rest,
+        date: new Date(date),
+        warehouse: { connect: { uid: warehouseId } },
+        product: { connect: { uid: productId } },
+      },
+    });
   }
   remove(id: string) {
-    return this.prisma.adjustment.delete({ where: { id } });
+    return this.prisma.adjustment.delete({ where: { uid: id } });
   }
 }
 

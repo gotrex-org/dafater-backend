@@ -53,22 +53,26 @@ export class TreasuryService {
       _sum: { cashOut: true, expAmt: true },
     });
     const cats = await this.prisma.expenseCategory.findMany();
-    const name = (id: string | null) => cats.find((c) => c.id === id)?.name || 'غير محدد';
-    return grouped.map((g) => ({
-      categoryId: g.categoryId,
-      category: name(g.categoryId),
-      total: (g._sum.cashOut || 0) + (g._sum.expAmt || 0),
-    }));
+    // transaction.categoryId is the category's integer id; expose its uid
+    const byId = new Map(cats.map((c) => [c.id, c]));
+    return grouped.map((g) => {
+      const cat = g.categoryId == null ? undefined : byId.get(g.categoryId);
+      return {
+        categoryId: cat?.uid ?? null,
+        category: cat?.name ?? 'غير محدد',
+        total: (g._sum.cashOut || 0) + (g._sum.expAmt || 0),
+      };
+    });
   }
 
   create(dto: TreasuryDto) {
     return this.prisma.treasuryAccount.create({ data: dto });
   }
   update(id: string, dto: TreasuryDto) {
-    return this.prisma.treasuryAccount.update({ where: { id }, data: dto });
+    return this.prisma.treasuryAccount.update({ where: { uid: id }, data: dto });
   }
   remove(id: string) {
-    return this.prisma.treasuryAccount.delete({ where: { id } });
+    return this.prisma.treasuryAccount.delete({ where: { uid: id } });
   }
 }
 
@@ -85,7 +89,7 @@ export class TreasuryController {
   @Get('expenses-by-category') @Permissions('treasury') expenses() {
     return this.service.expensesByCategory();
   }
-  @Post() @Permissions('settings') create(@Body() dto: TreasuryDto) {
+  @Post() @Permissions('settings', 'treasury.add') create(@Body() dto: TreasuryDto) {
     return this.service.create(dto);
   }
   @Patch(':id') @Permissions('settings') update(@Param('id') id: string, @Body() dto: TreasuryDto) {

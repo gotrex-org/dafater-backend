@@ -19,10 +19,10 @@ export class ExpenseCategoriesService {
     return this.prisma.expenseCategory.create({ data: dto });
   }
   update(id: string, dto: CategoryDto) {
-    return this.prisma.expenseCategory.update({ where: { id }, data: dto });
+    return this.prisma.expenseCategory.update({ where: { uid: id }, data: dto });
   }
   remove(id: string) {
-    return this.prisma.expenseCategory.delete({ where: { id } });
+    return this.prisma.expenseCategory.delete({ where: { uid: id } });
   }
 }
 

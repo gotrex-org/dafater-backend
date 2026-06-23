@@ -13,22 +13,23 @@ export class AuthService {
 
   /** Public list for the login user-picker (no secrets). */
   async listLoginUsers() {
+    // `uid` is exposed as the public `id` by UidSerializerInterceptor
     const users = await this.prisma.user.findMany({
-      select: { id: true, name: true, admin: true },
+      select: { uid: true, name: true, admin: true },
       orderBy: { createdAt: 'asc' },
     });
     return users;
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: dto.userId } });
+    const user = await this.prisma.user.findUnique({ where: { uid: dto.userId } });
     if (!user) throw new UnauthorizedException('مستخدم غير موجود');
 
     const ok = await bcrypt.compare(dto.pin, user.pinHash);
     if (!ok) throw new UnauthorizedException('الرقم السري غير صحيح');
 
     const token = await this.jwt.signAsync({
-      sub: user.id,
+      sub: user.uid,
       name: user.name,
       admin: user.admin,
       ver: user.tokenVersion,
@@ -36,7 +37,7 @@ export class AuthService {
 
     return {
       token,
-      user: { id: user.id, name: user.name, admin: user.admin, views: user.views },
+      user: { id: user.uid, name: user.name, admin: user.admin, views: user.views },
     };
   }
 }

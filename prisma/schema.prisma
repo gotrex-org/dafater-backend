@@ -4,6 +4,13 @@
 // log + Adjustment records, exactly like the original app. Nothing is stored
 // pre-aggregated.
 //
+// IDs: every table has an integer primary key `id` (autoincrement) plus a
+// stable, unique `uid` (cuid). Foreign keys are INTEGERS that reference the
+// parent's `id` (normal relational design). The API/frontend, however, speak
+// only `uid`: requests carry uids, services resolve them to ids on write, and
+// a global interceptor maps `id` -> `uid` (and FK ids -> related uids) on read,
+// so the integer ids never leave the API.
+//
 // NOTE: money fields use Float for a clean first-pass scaffold. For production
 // accounting, switch to `Decimal @db.Decimal(14, 2)` (or integer cents).
 
@@ -23,6 +30,7 @@ datasource db {
 enum PartyRole {
   CLIENT
   SUPPLIER
+  AGENT // صاحب عمولة
 }
 
 enum PartyType {
@@ -48,7 +56,8 @@ enum OrderStatus {
 // ----------------------------- auth -----------------------------
 
 model User {
-  id        String   @id @default(cuid())
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
   name      String
   pinHash   String // bcrypt hash of the 4-digit PIN
   admin     Boolean  @default(false)
@@ -64,13 +73,15 @@ model User {
 // --------------------------- master data ---------------------------
 
 model Party {
-  id      String     @id @default(cuid())
-  name    String
-  role    PartyRole
-  type    PartyType? // only meaningful for clients
-  phone   String?
-  opening Float      @default(0) // opening balance (+ = owes us)
-  hidden  Boolean    @default(false)
+  id      Int        @id @default(autoincrement())
+  uid     String     @unique @default(cuid())
+  name     String
+  role     PartyRole
+  type     PartyType? // only meaningful for clients
+  phone    String?
+  currency Currency   @default(EGP) // العملة اللي بيتعامل بيها الطرف
+  opening  Float      @default(0) // opening balance (+ = owes us)
+  hidden   Boolean    @default(false)
 
   transactions Transaction[]
   invoices     Invoice[]
@@ -85,7 +96,8 @@ model Party {
 }
 
 model TreasuryAccount {
-  id       String   @id @default(cuid())
+  id       Int      @id @default(autoincrement())
+  uid      String   @unique @default(cuid())
   name     String
   opening  Float    @default(0)
   currency Currency @default(EGP)
@@ -100,7 +112,8 @@ model TreasuryAccount {
 }
 
 model Warehouse {
-  id   String @id @default(cuid())
+  id   Int    @id @default(autoincrement())
+  uid  String @unique @default(cuid())
   name String
 
   invoices    Invoice[]
@@ -111,9 +124,11 @@ model Warehouse {
 }
 
 model Product {
-  id   String  @id @default(cuid())
+  id   Int     @id @default(autoincrement())
+  uid  String  @unique @default(cuid())
   name String
   unit String?
+  service Boolean @default(false) // a charge/service line (نولون، تخليص…) — excluded from stock
 
   invoiceItems InvoiceItem[]
   dealItems    DealItem[]
@@ -124,7 +139,8 @@ model Product {
 }
 
 model ExpenseCategory {
-  id   String @id @default(cuid())
+  id   Int    @id @default(autoincrement())
+  uid  String @unique @default(cuid())
   name String
 
   transactions Transaction[]
@@ -137,21 +153,22 @@ model ExpenseCategory {
 // Single source of truth. Every financial movement is a Transaction.
 
 model Transaction {
-  id   String   @id @default(cuid())
+  id   Int      @id @default(autoincrement())
+  uid  String   @unique @default(cuid())
   date DateTime
   type String // فاتورة بيع / تحصيل / مصروف / تحويل بين الخزائن ... (kept as label)
 
   party   Party?  @relation(fields: [partyId], references: [id], onDelete: Cascade)
-  partyId String?
+  partyId Int?
 
   treasury   TreasuryAccount? @relation("TxTreasury", fields: [treasuryId], references: [id], onDelete: Cascade)
-  treasuryId String?
+  treasuryId Int?
 
   treasury2   TreasuryAccount? @relation("TxTreasury2", fields: [treasuryId2], references: [id], onDelete: Cascade)
-  treasuryId2 String?
+  treasuryId2 Int?
 
   category   ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  categoryId String?
+  categoryId Int?
 
   debit    Float @default(0) // owed to us (party) / paid out
   credit   Float @default(0) // we owe (party) / received
@@ -161,13 +178,17 @@ model Transaction {
   cashOut2 Float @default(0) // out of treasury2
   expAmt   Float @default(0) // commission/expense amount
 
+  // "تحصيل مجهول": cash received whose owner is unknown; sits pending until
+  // resolved to a party, then credited to their ledger.
+  pending Boolean @default(false)
+
   note String?
 
   invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  invoiceId String?
+  invoiceId Int?
 
   deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  dealId String?
+  dealId Int?
 
   createdAt DateTime @default(now())
 
@@ -179,20 +200,21 @@ model Transaction {
 // ----------------------------- invoices -----------------------------
 
 model Invoice {
-  id   String      @id @default(cuid())
+  id   Int         @id @default(autoincrement())
+  uid  String      @unique @default(cuid())
   kind InvoiceKind
   no   String
   date DateTime
 
   party   Party  @relation(fields: [partyId], references: [id], onDelete: Restrict)
-  partyId String
+  partyId Int
 
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  warehouseId String
+  warehouseId Int
 
   paid       Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
-  treasuryId String?
+  treasuryId Int?
 
   note String?
 
@@ -211,11 +233,12 @@ model Invoice {
 }
 
 model InvoiceItem {
-  id        String  @id @default(cuid())
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
   invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  invoiceId String
+  invoiceId Int
   product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productId String
+  productId Int
   qty       Float
   price     Float
 
@@ -226,20 +249,21 @@ model InvoiceItem {
 // External pass-through sales (no stock impact).
 
 model Deal {
-  id   String   @id @default(cuid())
+  id   Int      @id @default(autoincrement())
+  uid  String   @unique @default(cuid())
   no   String
   date DateTime
 
   client   Party  @relation("DealClient", fields: [clientId], references: [id], onDelete: Restrict)
-  clientId String
+  clientId Int
 
   supplier   Party  @relation("DealSupplier", fields: [supplierId], references: [id], onDelete: Restrict)
-  supplierId String
+  supplierId Int
 
   paidIn     Float            @default(0)
   paidOut    Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
-  treasuryId String?
+  treasuryId Int?
 
   note String?
 
@@ -251,13 +275,15 @@ model Deal {
 }
 
 model DealItem {
-  id        String  @id @default(cuid())
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
   deal      Deal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  dealId    String
+  dealId    Int
   product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productId String
+  productId Int
   qty       Float
-  price     Float
+  price     Float // sell price (to client)
+  buyPrice  Float @default(0) // buy price (from supplier)
 
   @@index([dealId])
 }
@@ -265,12 +291,13 @@ model DealItem {
 // -------------------------- stock adjustments --------------------------
 
 model Adjustment {
-  id          String    @id @default(cuid())
+  id          Int       @id @default(autoincrement())
+  uid         String    @unique @default(cuid())
   date        DateTime
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
-  warehouseId String
+  warehouseId Int
   product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
-  productId   String
+  productId   Int
   qty         Float // net change (+/-)
   note        String?
 
@@ -283,10 +310,11 @@ model Adjustment {
 // ------------------------------ requests ------------------------------
 
 model Request {
-  id       String   @id @default(cuid())
+  id       Int      @id @default(autoincrement())
+  uid      String   @unique @default(cuid())
   date     DateTime
   client   Party    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  clientId String
+  clientId Int
   note     String?
   done     Boolean  @default(false)
   doneDate DateTime?
@@ -299,23 +327,27 @@ model Request {
 }
 
 model RequestItem {
-  id        String  @id @default(cuid())
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
   request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  requestId String
+  requestId Int
   name      String // free text (not linked to Product)
-  qty       Float
+  qty       Float // ordered quantity
+  received  Float   @default(0) // delivered so far; remaining = qty - received
 }
 
 // ------------------------------ manifests ------------------------------
 
 model Manifest {
-  id          String   @id @default(cuid())
+  id          Int      @id @default(autoincrement())
+  uid         String   @unique @default(cuid())
   no          String
   date        DateTime
   invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  invoiceId   String?
+  invoiceId   Int?
   clientName  String
   vehicleNo   String?
+  trailerNo   String?
   driverName  String?
   driverPhone String?
   driverNID   String?
@@ -329,9 +361,10 @@ model Manifest {
 }
 
 model ManifestItem {
-  id         String   @id @default(cuid())
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
   manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
-  manifestId String
+  manifestId Int
   name       String
   qty        Float
 }
@@ -339,7 +372,8 @@ model ManifestItem {
 // -------------------------- public orders --------------------------
 
 model Order {
-  id     String      @id @default(cuid())
+  id     Int         @id @default(autoincrement())
+  uid    String      @unique @default(cuid())
   date   DateTime    @default(now())
   name   String
   phone  String?
@@ -352,9 +386,10 @@ model Order {
 }
 
 model OrderItem {
-  id      String @id @default(cuid())
+  id      Int    @id @default(autoincrement())
+  uid     String @unique @default(cuid())
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderId String
+  orderId Int
   name    String
   qty     Float
 }
@@ -364,4 +399,19 @@ model OrderItem {
 model Config {
   id         Int    @id @default(1) // singleton row
   orderEmail String @default("yusuftarek.97@gmail.com")
+}
+
+// ------------------------------ audit log ------------------------------
+// One row per mutating request (who did what, and when).
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  userName  String
+  action    String // CREATE | UPDATE | DELETE
+  entity    String // invoices, manifests, parties, ...
+  summary   String? // friendly label (e.g. invoice no / party name)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

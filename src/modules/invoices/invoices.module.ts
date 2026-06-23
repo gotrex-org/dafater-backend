@@ -20,7 +20,7 @@ class InvoiceItemDto {
 
 export class CreateInvoiceDto {
   @IsEnum(InvoiceKind) kind: InvoiceKind;
-  @IsString() no: string;
+  @IsOptional() @IsString() no?: string; // auto-numbered per kind when omitted
   @IsDateString() date: string;
   @IsString() partyId: string;
   @IsString() warehouseId: string;
@@ -32,9 +32,9 @@ export class CreateInvoiceDto {
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
 
-  // purchase only
+  // purchase only — commission is credited to the chosen agent party's ledger
   @IsOptional() @IsNumber() commissionAmount?: number;
-  @IsOptional() @IsString() commissionTo?: string;
+  @IsOptional() @IsString() commissionPartyId?: string;
 }
 
 @Injectable()
@@ -51,7 +51,7 @@ export class InvoicesService {
 
   async findOne(id: string) {
     const inv = await this.prisma.invoice.findUnique({
-      where: { id },
+      where: { uid: id },
       include: { party: true, warehouse: true, treasury: true, items: { include: { product: true } } },
     });
     if (!inv) throw new NotFoundException('Invoice not found');
@@ -70,21 +70,42 @@ export class InvoicesService {
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
+      // resolve all public uids in the request to internal integer ids
+      const [party, warehouse, treasury] = await Promise.all([
+        tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true } }),
+        tx.warehouse.findUniqueOrThrow({ where: { uid: dto.warehouseId }, select: { id: true } }),
+        dto.treasuryId
+          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
+          : Promise.resolve(null),
+      ]);
+      // commission recipient (agent) — its ledger gets credited below
+      const commissionParty = dto.commissionPartyId
+        ? await tx.party.findUniqueOrThrow({ where: { uid: dto.commissionPartyId }, select: { id: true, name: true } })
+        : null;
+      const products = await tx.product.findMany({
+        where: { uid: { in: dto.items.map((it) => it.productId) } },
+        select: { id: true, uid: true },
+      });
+      const productIdByUid = new Map(products.map((p) => [p.uid, p.id]));
+
+      // auto-number per party (each client/supplier has its own running sequence)
+      const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
+
       const invoice = await tx.invoice.create({
         data: {
           kind: dto.kind,
-          no: dto.no,
+          no,
           date,
-          partyId: dto.partyId,
-          warehouseId: dto.warehouseId,
+          partyId: party.id,
+          warehouseId: warehouse.id,
           paid,
-          treasuryId: dto.treasuryId || null,
+          treasuryId: treasury?.id ?? null,
           note: dto.note,
           commissionAmount: dto.commissionAmount ?? null,
-          commissionTo: dto.commissionTo ?? null,
+          commissionTo: commissionParty?.name ?? null,
           items: {
             create: dto.items.map((it) => ({
-              productId: it.productId,
+              productId: productIdByUid.get(it.productId)!,
               qty: it.qty,
               price: it.price,
             })),
@@ -97,33 +118,33 @@ export class InvoicesService {
       if (isSale) {
         // customer owes us the full amount
         txns.push({
-          date, type: 'فاتورة بيع', partyId: dto.partyId,
-          debit: total, note: `فاتورة بيع #${dto.no}`, invoiceId: invoice.id,
+          date, type: 'فاتورة بيع', partyId: party.id,
+          debit: total, note: `فاتورة بيع #${no}`, invoiceId: invoice.id,
         });
         if (paid > 0) {
           txns.push({
-            date, type: 'تحصيل', partyId: dto.partyId, treasuryId: dto.treasuryId || null,
-            credit: paid, cashIn: paid, note: `محصّل مع فاتورة #${dto.no}`, invoiceId: invoice.id,
+            date, type: 'تحصيل', partyId: party.id, treasuryId: treasury?.id ?? null,
+            credit: paid, cashIn: paid, note: `محصّل مع فاتورة #${no}`, invoiceId: invoice.id,
           });
         }
       } else {
         // we owe the supplier the full amount
         txns.push({
-          date, type: 'فاتورة شراء', partyId: dto.partyId,
-          credit: total, note: `فاتورة شراء #${dto.no}`, invoiceId: invoice.id,
+          date, type: 'فاتورة شراء', partyId: party.id,
+          credit: total, note: `فاتورة شراء #${no}`, invoiceId: invoice.id,
         });
         if (paid > 0) {
           txns.push({
-            date, type: 'دفعة لمورد', partyId: dto.partyId, treasuryId: dto.treasuryId || null,
-            debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${dto.no}`, invoiceId: invoice.id,
+            date, type: 'دفعة لمورد', partyId: party.id, treasuryId: treasury?.id ?? null,
+            debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${no}`, invoiceId: invoice.id,
           });
         }
-        if (dto.commissionAmount && dto.commissionAmount > 0) {
-          const cat = await tx.expenseCategory.findFirst({ where: { name: 'عمولة' } });
+        if (dto.commissionAmount && dto.commissionAmount > 0 && commissionParty) {
+          // we owe the agent their commission → credit their ledger
           txns.push({
-            date, type: 'عمولة', categoryId: cat?.id || null,
-            expAmt: dto.commissionAmount,
-            note: `عمولة فاتورة #${dto.no}${dto.commissionTo ? ' — ' + dto.commissionTo : ''}`,
+            date, type: 'commission', partyId: commissionParty.id,
+            credit: dto.commissionAmount,
+            note: `عمولة فاتورة #${no}`,
             invoiceId: invoice.id,
           });
         }
@@ -138,9 +159,19 @@ export class InvoicesService {
     });
   }
 
+  /** Next running invoice number for a party: max existing numeric `no` + 1. */
+  private async nextNo(tx: Prisma.TransactionClient, partyId: number): Promise<string> {
+    const rows = await tx.invoice.findMany({ where: { partyId }, select: { no: true } });
+    const max = rows.reduce((mx, r) => {
+      const n = parseInt(r.no, 10);
+      return Number.isFinite(n) && n > mx ? n : mx;
+    }, 0);
+    return String(max + 1);
+  }
+
   /** Deleting an invoice cascades its transactions (invoiceId relation). */
   remove(id: string) {
-    return this.prisma.invoice.delete({ where: { id } });
+    return this.prisma.invoice.delete({ where: { uid: id } });
   }
 }
 
@@ -165,6 +196,7 @@ export class InvoicesController {
   }
 
   @Delete(':id')
+  @Permissions('invoices.delete')
   remove(@Param('id') id: string) {
     return this.service.remove(id);
   }

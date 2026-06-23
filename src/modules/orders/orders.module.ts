@@ -33,10 +33,10 @@ export class OrdersService {
     });
   }
   setStatus(id: string, status: OrderStatus) {
-    return this.prisma.order.update({ where: { id }, data: { status } });
+    return this.prisma.order.update({ where: { uid: id }, data: { status } });
   }
   remove(id: string) {
-    return this.prisma.order.delete({ where: { id } });
+    return this.prisma.order.delete({ where: { uid: id } });
   }
 }
 

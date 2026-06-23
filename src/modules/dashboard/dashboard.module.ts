@@ -21,7 +21,7 @@ export class DashboardService {
       const bal = balById[p.id] ?? p.opening;
       if (p.role === 'CLIENT' && bal > 0) receivable += bal;
       if (p.role === 'SUPPLIER' && bal < 0) payable += -bal;
-      top.push({ id: p.id, name: p.name, role: p.role, balance: bal });
+      top.push({ id: p.uid, name: p.name, role: p.role, balance: bal });
     }
     top.sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
 
@@ -37,7 +37,7 @@ export class DashboardService {
     const warehouses = await this.prisma.warehouse.findMany();
     const warehouseValues = await Promise.all(
       warehouses.map(async (w) => ({
-        id: w.id, name: w.name, value: await this.balances.warehouseValue(w.id),
+        id: w.uid, name: w.name, value: await this.balances.warehouseValue(w.id),
       })),
     );
     const inventoryValue = warehouseValues.reduce((s, w) => s + w.value, 0);

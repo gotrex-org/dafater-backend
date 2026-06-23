@@ -28,7 +28,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    // `sub` carries the user's public uid
+    const user = await this.prisma.user.findUnique({ where: { uid: payload.sub } });
     if (!user) throw new UnauthorizedException();
 
     // revocation: a token is invalid once the user's tokenVersion moves past it
@@ -37,6 +38,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     // trust the DB, not the token claims, for admin/views
-    return { id: user.id, name: user.name, admin: user.admin, views: user.views };
+    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
   }
 }

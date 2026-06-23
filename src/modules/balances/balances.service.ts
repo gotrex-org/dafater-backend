@@ -12,7 +12,12 @@ export class BalancesService {
 
   // ----- party ledger -----
 
-  async partyBalance(partyId: string): Promise<number> {
+  // NOTE: foreign keys are integers referencing `id`, so transaction.partyId /
+  // treasuryId / productId / warehouseId carry the related row's integer `id`.
+  // Every balance here is therefore keyed by the integer `id`; callers resolve
+  // a public `uid` to its `id` before calling in.
+
+  async partyBalance(partyId: number): Promise<number> {
     const party = await this.prisma.party.findUnique({ where: { id: partyId } });
     if (!party) return 0;
     const agg = await this.prisma.transaction.aggregate({
@@ -22,18 +27,18 @@ export class BalancesService {
     return (party.opening || 0) + (agg._sum.debit || 0) - (agg._sum.credit || 0);
   }
 
-  /** balance for every party, keyed by id (single pass). */
-  async allPartyBalances(): Promise<Record<string, number>> {
+  /** balance for every party, keyed by integer id (single pass). */
+  async allPartyBalances(): Promise<Record<number, number>> {
     const parties = await this.prisma.party.findMany();
     const grouped = await this.prisma.transaction.groupBy({
       by: ['partyId'],
       where: { partyId: { not: null } },
       _sum: { debit: true, credit: true },
     });
-    const byId: Record<string, number> = {};
+    const byId: Record<number, number> = {};
     for (const p of parties) byId[p.id] = p.opening || 0;
     for (const g of grouped) {
-      if (!g.partyId) continue;
+      if (g.partyId == null) continue;
       byId[g.partyId] = (byId[g.partyId] || 0) + (g._sum.debit || 0) - (g._sum.credit || 0);
     }
     return byId;
@@ -41,7 +46,7 @@ export class BalancesService {
 
   // ----- treasury -----
 
-  async treasuryBalance(treasuryId: string): Promise<number> {
+  async treasuryBalance(treasuryId: number): Promise<number> {
     const acc = await this.prisma.treasuryAccount.findUnique({ where: { id: treasuryId } });
     if (!acc) return 0;
     const primary = await this.prisma.transaction.aggregate({
@@ -74,7 +79,7 @@ export class BalancesService {
   // ----- inventory -----
 
   /** stock of a product in a warehouse: purchases(+) - sales(-) + adjustments. */
-  async stockOf(productId: string, warehouseId: string): Promise<number> {
+  async stockOf(productId: number, warehouseId: number): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
       where: { productId, invoice: { warehouseId } },
       select: { qty: true, invoice: { select: { kind: true } } },
@@ -89,7 +94,7 @@ export class BalancesService {
   }
 
   /** weighted average purchase cost across all purchase invoices. */
-  async avgCost(productId: string): Promise<number> {
+  async avgCost(productId: number): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
       where: { productId, invoice: { kind: 'PURCHASE' } },
       select: { qty: true, price: true },
@@ -104,19 +109,21 @@ export class BalancesService {
   }
 
   /** stock rows for a warehouse with valuation. */
-  async warehouseStock(warehouseId: string) {
-    const products = await this.prisma.product.findMany();
+  async warehouseStock(warehouseId: number) {
+    // service/charge products (نولون، تخليص…) are not stock — exclude them
+    const products = await this.prisma.product.findMany({ where: { service: false } });
     const rows = await Promise.all(
       products.map(async (p) => {
         const qty = await this.stockOf(p.id, warehouseId);
         const cost = await this.avgCost(p.id);
-        return { productId: p.id, name: p.name, unit: p.unit, qty, cost, value: qty * cost };
+        // expose the product's public uid (no relation object here to map from)
+        return { productId: p.uid, name: p.name, unit: p.unit, qty, cost, value: qty * cost };
       }),
     );
     return rows;
   }
 
-  async warehouseValue(warehouseId: string): Promise<number> {
+  async warehouseValue(warehouseId: number): Promise<number> {
     const rows = await this.warehouseStock(warehouseId);
     return rows.reduce((s, r) => s + r.value, 0);
   }

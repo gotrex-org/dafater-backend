@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { UidSerializerInterceptor } from './common/uid-serializer.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -19,6 +20,9 @@ async function bootstrap() {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
+
+  // expose `uid` as the public `id`; never leak the integer surrogate key
+  app.useGlobalInterceptors(new UidSerializerInterceptor());
 
   const port = Number(process.env.PORT) || 4000;
   await app.listen(port, '0.0.0.0');

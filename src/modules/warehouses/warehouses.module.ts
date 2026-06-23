@@ -19,17 +19,19 @@ export class WarehousesService {
   findAll(q: PaginationQueryDto) {
     return paginate(this.prisma.warehouse, q, { orderBy: { name: 'asc' } });
   }
-  stock(id: string) {
-    return this.balances.warehouseStock(id);
+  async stock(id: string) {
+    const wh = await this.prisma.warehouse.findUnique({ where: { uid: id }, select: { id: true } });
+    if (!wh) return [];
+    return this.balances.warehouseStock(wh.id);
   }
   create(dto: WarehouseDto) {
     return this.prisma.warehouse.create({ data: dto });
   }
   update(id: string, dto: WarehouseDto) {
-    return this.prisma.warehouse.update({ where: { id }, data: dto });
+    return this.prisma.warehouse.update({ where: { uid: id }, data: dto });
   }
   remove(id: string) {
-    return this.prisma.warehouse.delete({ where: { id } });
+    return this.prisma.warehouse.delete({ where: { uid: id } });
   }
 }
 
@@ -43,7 +45,7 @@ export class WarehousesController {
   @Get(':id/stock') stock(@Param('id') id: string) {
     return this.service.stock(id);
   }
-  @Post() @Permissions('settings') create(@Body() dto: WarehouseDto) {
+  @Post() @Permissions('settings', 'inventory.addWarehouse') create(@Body() dto: WarehouseDto) {
     return this.service.create(dto);
   }
   @Patch(':id') @Permissions('settings') update(@Param('id') id: string, @Body() dto: WarehouseDto) {

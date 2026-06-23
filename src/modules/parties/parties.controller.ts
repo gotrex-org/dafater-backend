@@ -5,6 +5,7 @@ import { PartyRole } from '@prisma/client';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { AdminOnly } from '../../common/decorators/admin.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @Controller('parties')
@@ -27,24 +28,24 @@ export class PartiesController {
   }
 
   @Get(':id/ledger')
-  ledger(@Param('id') id: string) {
-    return this.service.ledger(id);
+  ledger(@Param('id') id: string, @Query('from') from?: string, @Query('to') to?: string) {
+    return this.service.ledger(id, from, to);
   }
 
   @Post()
-  @Permissions('settings')
+  @Permissions('settings', 'invoices')
   create(@Body() dto: CreatePartyDto) {
     return this.service.create(dto);
   }
 
   @Patch(':id')
-  @Permissions('settings')
+  @Permissions('settings', 'invoices')
   update(@Param('id') id: string, @Body() dto: UpdatePartyDto) {
     return this.service.update(id, dto);
   }
 
   @Delete(':id')
-  @Permissions('settings')
+  @AdminOnly() // حذف الأطراف للمدير فقط
   remove(@Param('id') id: string) {
     return this.service.remove(id);
   }

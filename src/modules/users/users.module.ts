@@ -5,7 +5,7 @@ import {
 import { IsArray, IsBoolean, IsOptional, IsString, Length } from 'class-validator';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AdminOnly } from '../../common/decorators/admin.decorator';
+import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 
@@ -27,8 +27,9 @@ export class UsersService {
   constructor(private prisma: PrismaService) {}
 
   findAll(q: PaginationQueryDto) {
+    // `uid` is exposed as the public `id` by UidSerializerInterceptor
     return paginate(this.prisma.user, q, {
-      select: { id: true, name: true, admin: true, views: true, createdAt: true },
+      select: { uid: true, name: true, admin: true, views: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -38,7 +39,7 @@ export class UsersService {
     const user = await this.prisma.user.create({
       data: { ...rest, views: dto.views ?? [], pinHash: await bcrypt.hash(pin, 10) },
     });
-    return { id: user.id, name: user.name, admin: user.admin, views: user.views };
+    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
   }
 
   async update(id: string, dto: UpdateUserDto) {
@@ -49,19 +50,19 @@ export class UsersService {
       // changing the PIN revokes all existing tokens for this user
       data.tokenVersion = { increment: 1 };
     }
-    const user = await this.prisma.user.update({ where: { id }, data });
-    return { id: user.id, name: user.name, admin: user.admin, views: user.views };
+    const user = await this.prisma.user.update({ where: { uid: id }, data });
+    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
   }
 
   async remove(id: string) {
     const count = await this.prisma.user.count();
     if (count <= 1) throw new BadRequestException('لا يمكن حذف آخر مستخدم');
-    return this.prisma.user.delete({ where: { id } });
+    return this.prisma.user.delete({ where: { uid: id } });
   }
 }
 
 @Controller('users')
-@AdminOnly()
+@Permissions('settings.users')
 export class UsersController {
   constructor(private service: UsersService) {}
   @Get() findAll(@Query() q: PaginationQueryDto) {
