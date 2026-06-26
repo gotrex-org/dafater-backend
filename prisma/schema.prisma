@@ -53,19 +53,35 @@ enum OrderStatus {
   DONE
 }
 
+// ----------------------------- enums (cont.) -----------------------------
+
+enum UserRole {
+  STAFF
+  CUSTOMER
+}
+
 // ----------------------------- auth -----------------------------
 
 model User {
   id        Int      @id @default(autoincrement())
   uid       String   @unique @default(cuid())
+  username  String?  @unique
   name      String
-  pinHash   String // bcrypt hash of the 4-digit PIN
+  pinHash   String
   admin     Boolean  @default(false)
   // Allowed view/permission keys: dash, invoices, deals, orders, requests,
-  // manifests, entry, inventory, ledger, treasury, settings
-  views     String[] @default([])
+  // manifests, entry, inventory, ledger, treasury, settings, audit
+  // Sub-keys: entry.*, invoices.*, deals.*, manifests.driverTrips,
+  //           inventory.addWarehouse, inventory.loans,
+  //           treasury.add, treasury.forex, settings.users, settings.general
+  views          String[] @default([])
+  // UIDs of parties this user can view in ledger; empty = all parties
+  ledgerPartyIds String[] @default([])
   // Incremented to revoke all outstanding JWTs (e.g. on PIN change / forced logout)
-  tokenVersion Int   @default(0)
+  tokenVersion   Int      @default(0)
+  role         UserRole @default(STAFF)
+  party        Party?   @relation(fields: [partyId], references: [id])
+  partyId      Int?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -83,11 +99,16 @@ model Party {
   opening  Float      @default(0) // opening balance (+ = owes us)
   hidden   Boolean    @default(false)
 
-  transactions Transaction[]
-  invoices     Invoice[]
-  dealsAsClient   Deal[] @relation("DealClient")
-  dealsAsSupplier Deal[] @relation("DealSupplier")
-  requests     Request[]
+  transactions     Transaction[]
+  invoices         Invoice[]
+  dealsAsClient    Deal[]   @relation("DealClient")
+  dealsAsSupplier  Deal[]   @relation("DealSupplier")
+  requests         Request[]
+  userAccounts     User[]
+  orders           Order[]
+  dollarTxs        DollarAgentTx[]
+  driverTrips      DriverTrip[]
+  loans            Loan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -106,6 +127,7 @@ model TreasuryAccount {
   transactionsAlt   Transaction[] @relation("TxTreasury2")
   invoices          Invoice[]
   deals             Deal[]
+  dollarTxs         DollarAgentTx[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -118,6 +140,7 @@ model Warehouse {
 
   invoices    Invoice[]
   adjustments Adjustment[]
+  loans       Loan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -133,6 +156,7 @@ model Product {
   invoiceItems InvoiceItem[]
   dealItems    DealItem[]
   adjustments  Adjustment[]
+  loans        Loan[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -212,6 +236,8 @@ model Invoice {
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   warehouseId Int
 
+  currency   Currency         @default(EGP)
+
   paid       Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
   treasuryId Int?
@@ -262,6 +288,7 @@ model Deal {
 
   paidIn     Float            @default(0)
   paidOut    Float            @default(0)
+  nawlon     Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
   treasuryId Int?
 
@@ -354,7 +381,8 @@ model Manifest {
   clearingAgent String?
   note        String?
 
-  items ManifestItem[]
+  items       ManifestItem[]
+  driverTrips DriverTrip[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -367,6 +395,55 @@ model ManifestItem {
   manifestId Int
   name       String
   qty        Float
+}
+
+// -------------------------- driver trips --------------------------
+
+model DriverTrip {
+  id            Int       @id @default(autoincrement())
+  uid           String    @unique @default(cuid())
+
+  manifest      Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId    Int?
+
+  party         Party?    @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId       Int?
+
+  driverName    String
+  vehicleNo     String?
+  trailerNo     String?
+  clientName    String
+
+  departureDate DateTime
+  agreedFreight Float                    // الناولون المتفق عليه
+  note          String?
+
+  arrivalDate   DateTime?                // set when trip ends
+  delayTxId     Int?                    // transaction id for posted delay fee
+  delayFee      Float     @default(0)   // computed delay fee (1200/day after day 8)
+
+  payments      DriverPayment[]
+
+  createdAt     DateTime  @default(now())
+
+  @@index([manifestId])
+  @@index([partyId])
+  @@map("driver_trips")
+}
+
+model DriverPayment {
+  id        Int        @id @default(autoincrement())
+  uid       String     @unique @default(cuid())
+  trip      DriverTrip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId    Int
+  date        DateTime
+  amount      Float
+  paymentType String   @default("freight")  // freight | delay
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([tripId])
+  @@map("driver_payments")
 }
 
 // -------------------------- public orders --------------------------
@@ -382,16 +459,20 @@ model Order {
 
   items OrderItem[]
 
+  party   Party? @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId Int?
+
   createdAt DateTime @default(now())
 }
 
 model OrderItem {
-  id      Int    @id @default(autoincrement())
-  uid     String @unique @default(cuid())
-  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderId Int
-  name    String
-  qty     Float
+  id       Int    @id @default(autoincrement())
+  uid      String @unique @default(cuid())
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId  Int
+  name     String
+  qty      Float
+  received Float  @default(0)
 }
 
 // ------------------------------ config ------------------------------
@@ -408,10 +489,97 @@ model AuditLog {
   id        Int      @id @default(autoincrement())
   uid       String   @unique @default(cuid())
   userName  String
-  action    String // CREATE | UPDATE | DELETE
-  entity    String // invoices, manifests, parties, ...
-  summary   String? // friendly label (e.g. invoice no / party name)
+  action    String   // CREATE | UPDATE | DELETE
+  entity    String   // invoices, manifests, parties, ...
+  summary   String?  // friendly label (e.g. invoice no / party name)
+  diff      Json?    // per-field { from, to } map — UPDATE only
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// ------------------------------ borrowed goods (العارية) ------------------------------
+
+model Loan {
+  id              Int       @id @default(autoincrement())
+  uid             String    @unique @default(cuid())
+  date            DateTime
+  borrowerName    String?
+  partyId         Int?
+  party           Party?    @relation(fields: [partyId], references: [id])
+  qty             Float
+  note            String?
+  status          String    @default("OPEN")  // OPEN | RETURNED
+  returnType      String?                      // GOODS | CASH | DEBT | MIXED
+  returnedQty     Float     @default(0)        // cumulative GOODS returned
+  cashReturnedQty Float     @default(0)        // cumulative CASH/DEBT qty
+  returnDate      DateTime?
+  returnNote      String?
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId       Int
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouseId     Int
+  returns         LoanReturn[]
+  createdAt       DateTime  @default(now())
+
+  @@index([warehouseId])
+  @@index([productId])
+  @@map("loans")
+}
+
+model LoanReturn {
+  id           Int      @id @default(autoincrement())
+  uid          String   @unique @default(cuid())
+  loan         Loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  loanId       Int
+  date         DateTime
+  returnType   String   // GOODS | CASH | DEBT
+  qty          Float
+  pricePerUnit Float?
+  note         String?
+  txId         Int?
+  createdAt    DateTime @default(now())
+
+  @@map("loan_returns")
+}
+
+// ------------------------------ forex / dollar agents ------------------------------
+
+model DollarAgent {
+  id    Int    @id @default(autoincrement())
+  uid   String @unique @default(cuid())
+  name  String
+  phone String?
+  note  String?
+
+  txs DollarAgentTx[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DollarAgentTx {
+  id           Int         @id @default(autoincrement())
+  uid          String      @unique @default(cuid())
+  date         DateTime
+  agent        DollarAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentId      Int
+  type         String      // EGP_IN | USD_OUT
+
+  // EGP_IN: EGP given to agent
+  egpAmount    Float       @default(0)
+  treasury     TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId   Int?
+
+  // USD_OUT: agent delivers USD to client
+  usdAmount    Float       @default(0)
+  exchangeRate Float       @default(0)
+  party        Party?      @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId      Int?
+
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId])
 }

@@ -1,16 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { BalancesService } from '../balances/balances.service';
+import { DashboardRepository } from './dashboard.repository';
 
 @Injectable()
 export class DashboardService {
   constructor(
-    private prisma: PrismaService,
+    private repo: DashboardRepository,
     private balances: BalancesService,
   ) {}
 
   async stats() {
-    const parties = await this.prisma.party.findMany();
+    const parties = await this.repo.findAllParties();
     const balById = await this.balances.allPartyBalances();
 
     let receivable = 0;
@@ -33,7 +33,7 @@ export class DashboardService {
       {} as Record<string, number>,
     );
 
-    const warehouses = await this.prisma.warehouse.findMany();
+    const warehouses = await this.repo.findAllWarehouses();
     const warehouseValues = await Promise.all(
       warehouses.map(async (w) => ({
         id: w.uid, name: w.name, value: await this.balances.warehouseValue(w.id),
@@ -52,8 +52,8 @@ export class DashboardService {
       counts: {
         clients: parties.filter((p) => p.role === 'CLIENT').length,
         suppliers: parties.filter((p) => p.role === 'SUPPLIER').length,
-        products: await this.prisma.product.count(),
-        invoices: await this.prisma.invoice.count(),
+        products: await this.repo.countProducts(),
+        invoices: await this.repo.countInvoices(),
       },
     };
   }

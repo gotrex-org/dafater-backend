@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateInvoiceDto } from './dto/invoices.dto';
+import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 import { InvoicesService } from './invoices.service';
 
 @Controller('invoices')
@@ -15,6 +15,11 @@ export class InvoicesController {
     return this.service.findAll(q, kind);
   }
 
+  @Get('next-no')
+  nextNo(@Query('partyId') partyId: string) {
+    return this.service.peekNextNo(partyId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.service.findOne(id);
@@ -23,6 +28,17 @@ export class InvoicesController {
   @Post()
   create(@Body() dto: CreateInvoiceDto) {
     return this.service.create(dto);
+  }
+
+  @Patch(':id/commission')
+  @Permissions('invoices.commission')
+  updateCommission(@Param('id') id: string, @Body() dto: CommissionDto) {
+    return this.service.updateCommission(id, dto);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
+    return this.service.update(id, dto);
   }
 
   @Delete(':id')

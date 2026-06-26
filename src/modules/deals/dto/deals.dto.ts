@@ -21,4 +21,10 @@ export class CreateDealDto {
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsNumber() commissionAmount?: number;
   @IsOptional() @IsString() commissionPartyId?: string;
+  @IsOptional() @IsNumber() nawlon?: number;
+}
+
+export class DealCommissionDto {
+  @IsOptional() @IsNumber() commissionAmount?: number;
+  @IsOptional() @IsString() commissionPartyId?: string;
 }

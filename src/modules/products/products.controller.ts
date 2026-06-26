@@ -9,6 +9,13 @@ import { ProductsService } from './products.service';
 export class ProductsController {
   constructor(private service: ProductsService) {}
 
+  // No @Permissions() here overrides the class-level — accessible to any authenticated user (including customers)
+  @Get('catalog')
+  @Permissions()
+  catalog() {
+    return this.service.catalog();
+  }
+
   @Get()
   findAll(@Query() q: PaginationQueryDto) {
     return this.service.findAll(q);

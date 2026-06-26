@@ -26,6 +26,9 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { AppConfigModule } from './modules/config/config.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { ForexModule } from './modules/forex/forex.module';
+import { LoansModule } from './modules/loans/loans.module';
+import { DriverTripsModule } from './modules/driver-trips/driver-trips.module';
 
 @Module({
   imports: [
@@ -59,6 +62,9 @@ import { AuditModule } from './modules/audit/audit.module';
     AppConfigModule,
     DashboardModule,
     AuditModule,
+    ForexModule,
+    LoansModule,
+    DriverTripsModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

@@ -1,35 +1,21 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { paginate } from '../../common/pagination';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateAdjustmentDto } from './dto/adjustments.dto';
+import { AdjustmentsRepository } from './adjustments.repository';
 
 @Injectable()
 export class AdjustmentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private repo: AdjustmentsRepository) {}
 
   findAll(q: PaginationQueryDto, warehouseId?: string) {
-    // warehouseId query param is the public uid -> filter via the relation
-    return paginate(this.prisma.adjustment, q, {
-      where: warehouseId ? { warehouse: { uid: warehouseId } } : {},
-      orderBy: { date: 'desc' },
-      include: { product: true, warehouse: true },
-    });
+    return this.repo.findAll(q, warehouseId);
   }
 
   create(dto: CreateAdjustmentDto) {
-    const { warehouseId, productId, date, ...rest } = dto;
-    return this.prisma.adjustment.create({
-      data: {
-        ...rest,
-        date: new Date(date),
-        warehouse: { connect: { uid: warehouseId } },
-        product: { connect: { uid: productId } },
-      },
-    });
+    return this.repo.create(dto);
   }
 
   remove(id: string) {
-    return this.prisma.adjustment.delete({ where: { uid: id } });
+    return this.repo.remove(id);
   }
 }

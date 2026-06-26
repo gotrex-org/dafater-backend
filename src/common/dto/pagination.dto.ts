@@ -16,4 +16,11 @@ export class PaginationQueryDto {
   /** optional free-text filter (service decides which fields it applies to). */
   @IsOptional() @IsString()
   search?: string;
+
+  /** optional date-range filter — ISO date strings e.g. "2024-01-01". */
+  @IsOptional() @IsString() from?: string;
+  @IsOptional() @IsString() to?: string;
+
+  /** filter treasury movements by a specific treasury account uid */
+  @IsOptional() @IsString() treasuryId?: string;
 }

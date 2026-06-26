@@ -8,7 +8,7 @@ if [ -d "prisma/migrations" ] && [ "$(ls -A prisma/migrations 2>/dev/null)" ]; t
   npx prisma migrate deploy
 else
   echo "▶ No migrations found — syncing schema with db push..."
-  npx prisma db push --skip-generate
+  npx prisma db push --skip-generate --accept-data-loss
 fi
 
 echo "▶ Seeding database (idempotent)..."

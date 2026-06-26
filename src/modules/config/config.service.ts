@@ -1,20 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateConfigDto } from './dto/config.dto';
+import { AppConfigRepository } from './config.repository';
 
 @Injectable()
 export class AppConfigService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private repo: AppConfigRepository) {}
 
-  get() {
-    return this.prisma.config.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } });
-  }
-
-  update(dto: UpdateConfigDto) {
-    return this.prisma.config.upsert({
-      where: { id: 1 },
-      update: { orderEmail: dto.orderEmail },
-      create: { id: 1, orderEmail: dto.orderEmail },
-    });
-  }
+  get() { return this.repo.get(); }
+  update(dto: UpdateConfigDto) { return this.repo.update(dto); }
 }

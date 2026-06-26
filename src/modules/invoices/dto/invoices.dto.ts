@@ -28,3 +28,24 @@ export class CreateInvoiceDto {
   @IsOptional() @IsNumber() commissionAmount?: number;
   @IsOptional() @IsString() commissionPartyId?: string;
 }
+
+export class UpdateInvoiceDto {
+  @IsDateString() date: string;
+  @IsString() partyId: string;
+  @IsString() warehouseId: string;
+
+  @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceItemDto)
+  items: InvoiceItemDto[];
+
+  @IsOptional() @IsNumber() paid?: number;
+  @IsOptional() @IsString() treasuryId?: string;
+  @IsOptional() @IsString() note?: string;
+
+  @IsOptional() @IsNumber() commissionAmount?: number;
+  @IsOptional() @IsString() commissionPartyId?: string;
+}
+
+export class CommissionDto {
+  @IsOptional() @IsNumber() commissionAmount?: number;
+  @IsOptional() @IsString() commissionPartyId?: string;
+}

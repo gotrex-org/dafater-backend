@@ -1,45 +1,67 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { paginate } from '../../common/pagination';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
+import { UsersRepository } from './users.repository';
+
+function fmt(u: any) {
+  return {
+    id: u.uid,
+    username: u.username ?? null,
+    name: u.name,
+    admin: u.admin,
+    views: u.views,
+    ledgerPartyIds: u.ledgerPartyIds ?? [],
+    role: u.role,
+    createdAt: u.createdAt,
+    party: u.party ? { id: u.party.uid, name: u.party.name } : null,
+  };
+}
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private repo: UsersRepository) {}
 
-  findAll(q: PaginationQueryDto) {
-    // `uid` is exposed as the public `id` by UidSerializerInterceptor
-    return paginate(this.prisma.user, q, {
-      select: { uid: true, name: true, admin: true, views: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    });
+  async findAll(q: PaginationQueryDto) {
+    const result = await this.repo.findAll(q);
+    return { ...result, data: result.data.map((u: any) => ({ ...fmt(u), pinHash: undefined })) };
   }
 
   async create(dto: CreateUserDto) {
-    const { pin, ...rest } = dto;
-    const user = await this.prisma.user.create({
-      data: { ...rest, views: dto.views ?? [], pinHash: await bcrypt.hash(pin, 10) },
-    });
-    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
+    const { pin, partyId, username, ledgerPartyIds, ...rest } = dto;
+    const data: any = { ...rest, views: dto.views ?? [], ledgerPartyIds: ledgerPartyIds ?? [], pinHash: await bcrypt.hash(pin, 10), ...(username ? { username } : {}) };
+    if (partyId) {
+      const party = await this.repo.findPartyByUid(partyId);
+      data.partyId = party.id;
+    }
+    const user = await this.repo.create(data);
+    return fmt(user);
   }
 
   async update(id: string, dto: UpdateUserDto) {
-    const { pin, ...rest } = dto;
+    const { pin, partyId, username, ledgerPartyIds, ...rest } = dto;
     const data: any = { ...rest };
+    if (ledgerPartyIds !== undefined) data.ledgerPartyIds = ledgerPartyIds;
+    if (username !== undefined) data.username = username || null;
     if (pin) {
       data.pinHash = await bcrypt.hash(pin, 10);
-      // changing the PIN revokes all existing tokens for this user
       data.tokenVersion = { increment: 1 };
     }
-    const user = await this.prisma.user.update({ where: { uid: id }, data });
-    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
+    if (partyId !== undefined) {
+      if (partyId) {
+        const party = await this.repo.findPartyByUid(partyId);
+        data.partyId = party.id;
+      } else {
+        data.partyId = null;
+      }
+    }
+    const user = await this.repo.update(id, data);
+    return fmt(user);
   }
 
   async remove(id: string) {
-    const count = await this.prisma.user.count();
+    const count = await this.repo.count();
     if (count <= 1) throw new BadRequestException('لا يمكن حذف آخر مستخدم');
-    return this.prisma.user.delete({ where: { uid: id } });
+    return this.repo.remove(id);
   }
 }

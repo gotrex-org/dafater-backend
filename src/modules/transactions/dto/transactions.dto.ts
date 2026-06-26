@@ -33,3 +33,11 @@ export class PostEntryDto {
   @IsOptional() @IsNumber() transferFee?: number; // رسوم نقل النقدية — تُسجّل على العميل (مدين)
   @IsOptional() @IsString() note?: string;
 }
+
+export class UpdateTransactionDto {
+  @IsOptional() @IsDateString() date?: string;
+  @IsOptional() @IsNumber() amount?: number;
+  @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() partyId?: string;
+  @IsOptional() @IsString() treasuryId?: string;
+}

@@ -1,6 +1,7 @@
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query,
+  Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query, Req,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { PartyRole } from '@prisma/client';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
@@ -20,6 +21,15 @@ export class PartiesController {
     @Query('includeHidden') includeHidden?: string,
   ) {
     return this.service.findAll(q, role, includeHidden === 'true');
+  }
+
+  // Accessible to any authenticated user — customer sees their own party's ledger
+  @Get('my/ledger')
+  @Permissions()
+  myLedger(@Req() req: Request, @Query('from') from?: string, @Query('to') to?: string) {
+    const partyId = (req as any).user?.partyId;
+    if (!partyId) throw new ForbiddenException('No party linked to this account');
+    return this.service.ledger(partyId, from, to);
   }
 
   @Get(':id')

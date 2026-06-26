@@ -11,9 +11,7 @@ export class AuthService {
     private jwt: JwtService,
   ) {}
 
-  /** Public list for the login user-picker (no secrets). */
   async listLoginUsers() {
-    // `uid` is exposed as the public `id` by UidSerializerInterceptor
     const users = await this.prisma.user.findMany({
       select: { uid: true, name: true, admin: true },
       orderBy: { createdAt: 'asc' },
@@ -22,22 +20,32 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { uid: dto.userId } });
-    if (!user) throw new UnauthorizedException('مستخدم غير موجود');
-
-    const ok = await bcrypt.compare(dto.pin, user.pinHash);
-    if (!ok) throw new UnauthorizedException('الرقم السري غير صحيح');
+    const user = await this.prisma.user.findUnique({
+      where: { username: dto.username },
+      include: { party: { select: { uid: true, name: true } } },
+    });
+    const ok = user && await bcrypt.compare(dto.password, user.pinHash);
+    if (!user || !ok) throw new UnauthorizedException('اسم المستخدم أو كلمة المرور غير صحيحة');
 
     const token = await this.jwt.signAsync({
       sub: user.uid,
       name: user.name,
       admin: user.admin,
       ver: user.tokenVersion,
+      role: user.role,
     });
 
     return {
       token,
-      user: { id: user.uid, name: user.name, admin: user.admin, views: user.views },
+      user: {
+        id: user.uid,
+        name: user.name,
+        admin: user.admin,
+        views: user.views,
+        ledgerPartyIds: user.ledgerPartyIds ?? [],
+        role: user.role,
+        ...(user.party ? { partyId: user.party.uid, partyName: user.party.name } : {}),
+      },
     };
   }
 }

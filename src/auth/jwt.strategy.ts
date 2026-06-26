@@ -8,7 +8,8 @@ export interface JwtPayload {
   sub: string;
   name: string;
   admin: boolean;
-  ver: number; // tokenVersion at issue time
+  ver: number;
+  role?: string;
 }
 
 @Injectable()
@@ -28,16 +29,21 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    // `sub` carries the user's public uid
-    const user = await this.prisma.user.findUnique({ where: { uid: payload.sub } });
+    const user = await this.prisma.user.findUnique({
+      where: { uid: payload.sub },
+      include: { party: { select: { uid: true, id: true, name: true } } },
+    });
     if (!user) throw new UnauthorizedException();
-
-    // revocation: a token is invalid once the user's tokenVersion moves past it
-    if (payload.ver !== user.tokenVersion) {
-      throw new UnauthorizedException('انتهت صلاحية الجلسة');
-    }
-
-    // trust the DB, not the token claims, for admin/views
-    return { id: user.uid, name: user.name, admin: user.admin, views: user.views };
+    if (payload.ver !== user.tokenVersion) throw new UnauthorizedException('انتهت صلاحية الجلسة');
+    return {
+      id: user.uid,
+      name: user.name,
+      admin: user.admin,
+      views: user.views,
+      role: user.role,
+      partyId: user.party?.uid,
+      partyIntId: user.party?.id,
+      partyName: user.party?.name,
+    };
   }
 }

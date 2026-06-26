@@ -1,43 +1,25 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { paginate } from '../../common/pagination';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateManifestDto } from './dto/manifests.dto';
+import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
+import { ManifestsRepository } from './manifests.repository';
 
 @Injectable()
 export class ManifestsService {
-  constructor(private prisma: PrismaService) {}
-  findAll(q: PaginationQueryDto) {
-    return paginate(this.prisma.manifest, q, { orderBy: { date: 'desc' }, include: { items: true } });
-  }
-  findOne(id: string) {
-    return this.prisma.manifest.findUnique({ where: { uid: id }, include: { items: true } });
-  }
+  constructor(private repo: ManifestsRepository) {}
+
+  findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
+  findOne(id: string) { return this.repo.findOne(id); }
+  findForParty(partyUid: string) { return this.repo.findForParty(partyUid); }
+
   async create(dto: CreateManifestDto) {
-    const { items, date, invoiceId, no, ...rest } = dto;
-    const finalNo = no?.trim() || (await this.nextNo());
-    return this.prisma.manifest.create({
-      data: {
-        ...rest,
-        no: finalNo,
-        date: new Date(date),
-        invoice: invoiceId ? { connect: { uid: invoiceId } } : undefined,
-        items: { create: items },
-      },
-      include: { items: true },
-    });
+    const finalNo = dto.no?.trim() || (await this.repo.nextNoForClient(dto.clientName));
+    return this.repo.create(dto, finalNo);
   }
 
-  /** Next sequential manifest number: max existing numeric `no` + 1. */
-  private async nextNo(): Promise<string> {
-    const rows = await this.prisma.manifest.findMany({ select: { no: true } });
-    const max = rows.reduce((mx, r) => {
-      const n = parseInt(r.no, 10);
-      return Number.isFinite(n) && n > mx ? n : mx;
-    }, 0);
-    return String(max + 1);
+  async peekNextNo(clientName: string): Promise<{ no: string }> {
+    return { no: await this.repo.nextNoForClient(clientName) };
   }
-  remove(id: string) {
-    return this.prisma.manifest.delete({ where: { uid: id } });
-  }
+
+  update(id: string, dto: UpdateManifestDto) { return this.repo.update(id, dto); }
+  remove(id: string) { return this.repo.remove(id); }
 }
