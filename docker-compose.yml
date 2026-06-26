@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: dafater_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dafater}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dafater}
+      POSTGRES_DB: ${POSTGRES_DB:-dafater}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dafater} -d ${POSTGRES_DB:-dafater}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dafater_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dafater}:${POSTGRES_PASSWORD:-dafater}@db:5432/${POSTGRES_DB:-dafater}?schema=public
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required — generate one with openssl rand -base64 48}"
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
+      JWT_ISSUER: ${JWT_ISSUER:-dafater-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-dafater-app}
+      PORT: 4000
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      THROTTLE_TTL: ${THROTTLE_TTL:-60000}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-120}
+    ports:
+      - "${API_PORT:-4000}:4000"
+    command: ["sh", "./docker-entrypoint.sh"]
+
+  dbeaver:
+    image: dbeaver/cloudbeaver:latest
+    container_name: dafater_dbeaver
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "${DBEAVER_PORT:-8978}:8978"
+    volumes:
+      - cloudbeaver_data:/opt/cloudbeaver/workspace
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: dafater_pgadmin
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@dafater.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-dafater}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  db_data:
+  cloudbeaver_data:
+  pgadmin_data:
