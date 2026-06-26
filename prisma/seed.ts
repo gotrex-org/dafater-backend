@@ -76,6 +76,14 @@ async function main() {
       views: ['dash', 'invoices', 'entry', 'inventory', 'ledger', 'requests', 'manifests'],
     },
   });
+  await prisma.user.create({
+    data: {
+      name: 'jox',
+      pinHash: await bcrypt.hash('jox', 10),
+      admin: true,
+      views: ALL_VIEWS,
+    },
+  });
 
   // ---- treasury ----
   await prisma.treasuryAccount.createMany({
