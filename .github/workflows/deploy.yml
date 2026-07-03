@@ -16,8 +16,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            cd ${{ secrets.SERVER_PATH }}
-            git -C dafater-backend pull origin main
+            cd ${{ secrets.SERVER_PATH }}/dafater-backend
+            git pull origin main
             docker compose build backend frontend
             docker compose up -d --no-deps backend frontend
             docker image prune -f
