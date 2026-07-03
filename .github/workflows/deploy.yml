@@ -18,6 +18,6 @@ jobs:
           script: |
             cd ${{ secrets.SERVER_PATH }}
             git -C dafater-backend pull origin main
-            docker-compose build backend frontend
-            docker-compose up -d --no-deps backend frontend
+            docker compose build backend frontend
+            docker compose up -d --no-deps backend frontend
             docker image prune -f
