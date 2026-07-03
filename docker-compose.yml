@@ -1,73 +1,64 @@
 services:
-  db:
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot_www:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - frontend
+      - backend
+
+  postgres:
     image: postgres:16-alpine
-    container_name: dafater_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-dafater}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dafater}
-      POSTGRES_DB: ${POSTGRES_DB:-dafater}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dafater} -d ${POSTGRES_DB:-dafater}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  api:
+  backend:
     build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: dafater_api
+      context: ./dafater-backend
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-dafater}:${POSTGRES_PASSWORD:-dafater}@db:5432/${POSTGRES_DB:-dafater}?schema=public
-      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required — generate one with openssl rand -base64 48}"
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1d}
-      JWT_ISSUER: ${JWT_ISSUER:-dafater-api}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-dafater-app}
-      PORT: 4000
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
-      THROTTLE_TTL: ${THROTTLE_TTL:-60000}
-      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-120}
-    ports:
-      - "${API_PORT:-4000}:4000"
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
+      PORT: "4000"
+      CORS_ORIGIN: "http://localhost:3000,http://72.62.177.48,https://www.abo-shama.com,https://abo-shama.com"
+    expose:
+      - "4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["sh", "./docker-entrypoint.sh"]
 
-  dbeaver:
-    image: dbeaver/cloudbeaver:latest
-    container_name: dafater_dbeaver
+  frontend:
+    build:
+      context: ./dafater-frontend
+      args:
+        NEXT_PUBLIC_API_URL: "https://abo-shama.com"
     restart: unless-stopped
+    expose:
+      - "3000"
     depends_on:
-      - db
-    ports:
-      - "${DBEAVER_PORT:-8978}:8978"
-    volumes:
-      - cloudbeaver_data:/opt/cloudbeaver/workspace
-
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: dafater_pgadmin
-    restart: unless-stopped
-    depends_on:
-      - db
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@dafater.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-dafater}
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-    ports:
-      - "${PGADMIN_PORT:-5050}:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      - backend
 
 volumes:
-  db_data:
-  cloudbeaver_data:
-  pgadmin_data:
+  pgdata:
+  certbot_www:
+  letsencrypt:
