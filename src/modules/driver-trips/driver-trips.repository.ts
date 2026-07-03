@@ -63,6 +63,10 @@ export class DriverTripsRepository {
     return this.prisma.transaction.create({ data });
   }
 
+  updateTransactionById(id: number, debit: number) {
+    return this.prisma.transaction.update({ where: { id }, data: { debit } });
+  }
+
   remove(uid: string) {
     return this.prisma.driverTrip.delete({ where: { uid } });
   }

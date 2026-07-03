@@ -10,8 +10,9 @@ const TXN_INCLUDE = { party: true, treasury: true, treasury2: true, category: tr
 export class TransactionsRepository {
   constructor(private prisma: PrismaService) {}
 
-  list(q: PaginationQueryDto) {
+  list(q: PaginationQueryDto, createdByIntId?: number) {
     const where: any = {};
+    if (createdByIntId) where.createdById = createdByIntId;
     if (q.from || q.to) where.date = {
       gte: q.from ? new Date(q.from) : undefined,
       lt: q.to ? new Date(new Date(q.to).getTime() + 86400000) : undefined,
@@ -107,11 +108,21 @@ export class TransactionsRepository {
       if (origCashOut > 0) data.cashOut = origDebit > 0 ? (amt / origDebit) * origCashOut : amt;
     }
 
-    return this.prisma.transaction.update({
+    const updated = await this.prisma.transaction.update({
       where: { uid: id },
       data,
       include: { party: true, treasury: true, treasury2: true, category: true },
     });
+
+    // Keep DriverTrip.weightDiffAmount in sync when the party-debit transaction is edited
+    if (txn.type === 'truckWeightDiff' && data.debit !== undefined) {
+      await this.prisma.driverTrip.updateMany({
+        where: { weightDiffTxId: txn.id },
+        data: { weightDiffAmount: data.debit },
+      });
+    }
+
+    return updated;
   }
 
   remove(id: string) {

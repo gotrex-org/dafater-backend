@@ -10,7 +10,7 @@ export class ProductsRepository {
 
   catalog() {
     return this.prisma.product.findMany({
-      select: { uid: true, name: true, unit: true },
+      select: { uid: true, name: true, unit: true, service: true },
       orderBy: { name: 'asc' },
     });
   }

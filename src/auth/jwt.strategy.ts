@@ -37,9 +37,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.ver !== user.tokenVersion) throw new UnauthorizedException('انتهت صلاحية الجلسة');
     return {
       id: user.uid,
+      intId: user.id,
       name: user.name,
       admin: user.admin,
       views: user.views,
+      ledgerPartyIds: user.ledgerPartyIds ?? [],
       role: user.role,
       partyId: user.party?.uid,
       partyIntId: user.party?.id,

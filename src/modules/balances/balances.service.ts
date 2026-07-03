@@ -6,6 +6,7 @@ export class BalancesService {
   constructor(private repo: BalancesRepository) {}
 
   partyBalance(partyId: number) { return this.repo.partyBalance(partyId); }
+  partyBalanceMulti(partyIds: number[]) { return this.repo.partyBalanceMulti(partyIds); }
   allPartyBalances() { return this.repo.allPartyBalances(); }
   treasuryBalance(treasuryId: number) { return this.repo.treasuryBalance(treasuryId); }
   allTreasuryBalances() { return this.repo.allTreasuryBalances(); }

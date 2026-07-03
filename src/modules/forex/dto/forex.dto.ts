@@ -1,4 +1,4 @@
-import { IsDateString, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsDateString, IsIn, IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateAgentDto {
   @IsString() name: string;
@@ -24,5 +24,13 @@ export class UsdOutDto {
   @IsNumber() @Min(0.01) usdAmount: number;
   @IsNumber() @Min(0.01) exchangeRate: number;
   @IsString() partyId: string;
+  @IsOptional() @IsString() note?: string;
+}
+
+export class SettleDto {
+  @IsDateString() date: string;
+  @IsNumber() @Min(0.01) egpAmount: number;
+  @IsIn(['in', 'out']) direction: 'in' | 'out'; // in = they pay us back; out = we pay them
+  @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
 }

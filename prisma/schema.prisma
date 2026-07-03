@@ -82,6 +82,7 @@ model User {
   role         UserRole @default(STAFF)
   party        Party?   @relation(fields: [partyId], references: [id])
   partyId      Int?
+  createdTransactions Transaction[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -98,6 +99,11 @@ model Party {
   currency Currency   @default(EGP) // العملة اللي بيتعامل بيها الطرف
   opening  Float      @default(0) // opening balance (+ = owes us)
   hidden   Boolean    @default(false)
+
+  // self-relation: link a client to a supplier so they share one ledger
+  linkedPartyId Int?    @unique
+  linkedParty   Party?  @relation("PartyLink", fields: [linkedPartyId], references: [id], onDelete: SetNull)
+  linkedFrom    Party?  @relation("PartyLink")
 
   transactions     Transaction[]
   invoices         Invoice[]
@@ -213,6 +219,9 @@ model Transaction {
 
   deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
   dealId Int?
+
+  createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdById Int?
 
   createdAt DateTime @default(now())
 
@@ -399,6 +408,20 @@ model ManifestItem {
 
 // -------------------------- driver trips --------------------------
 
+model Driver {
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
+  name       String   @unique
+  nationalId String?
+  phone      String?
+  phone2     String?
+  vehicleNo  String?
+  trailerNo  String?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
 model DriverTrip {
   id            Int       @id @default(autoincrement())
   uid           String    @unique @default(cuid())
@@ -418,9 +441,11 @@ model DriverTrip {
   agreedFreight Float                    // الناولون المتفق عليه
   note          String?
 
-  arrivalDate   DateTime?                // set when trip ends
-  delayTxId     Int?                    // transaction id for posted delay fee
-  delayFee      Float     @default(0)   // computed delay fee (1200/day after day 8)
+  arrivalDate      DateTime?              // set when trip ends
+  delayTxId        Int?                   // transaction id for posted delay fee
+  delayFee         Float     @default(0)  // computed delay fee (1200/day after day 8)
+  weightDiffAmount Float     @default(0)  // فرق وزن charged to client at arrival
+  weightDiffTxId   Int?                   // transaction id for the weight-diff party debit
 
   payments      DriverPayment[]
 
@@ -478,8 +503,10 @@ model OrderItem {
 // ------------------------------ config ------------------------------
 
 model Config {
-  id         Int    @id @default(1) // singleton row
-  orderEmail String @default("yusuftarek.97@gmail.com")
+  id             Int    @id @default(1) // singleton row
+  orderEmail     String @default("yusuftarek.97@gmail.com")
+  delayGraceDays Int    @default(8)    // أيام الحرية قبل بداية العطلة
+  delayFeePerDay Float  @default(1200) // قيمة يوم العطلة بالجنيه
 }
 
 // ------------------------------ audit log ------------------------------
@@ -491,8 +518,10 @@ model AuditLog {
   userName  String
   action    String   // CREATE | UPDATE | DELETE
   entity    String   // invoices, manifests, parties, ...
+  entityUid String?  // uid of the affected record (for deep-link / undo)
   summary   String?  // friendly label (e.g. invoice no / party name)
   diff      Json?    // per-field { from, to } map — UPDATE only
+  snapshot  Json?    // full entity state captured before DELETE (used for undo)
   createdAt DateTime @default(now())
 
   @@index([createdAt])

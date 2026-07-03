@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto } from './dto/forex.dto';
+import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto } from './dto/forex.dto';
 
 @Injectable()
 export class ForexRepository {
@@ -99,6 +99,38 @@ export class ForexRepository {
           note: dto.note ?? `توريد ${dto.usdAmount} دولار — سعر ${dto.exchangeRate}`,
         },
       });
+      return agentTx;
+    });
+  }
+
+  async settle(agent: { id: number; name: string }, treasuryId: number | undefined, dto: SettleDto) {
+    // direction 'in'  = they pay us back  → store positive egpAmount, treasury cashIn
+    // direction 'out' = we pay them       → store negative egpAmount, treasury cashOut
+    const signed = dto.direction === 'in' ? dto.egpAmount : -dto.egpAmount;
+    return this.prisma.$transaction(async (tx) => {
+      const agentTx = await tx.dollarAgentTx.create({
+        data: {
+          date: new Date(dto.date),
+          type: 'SETTLE',
+          egpAmount: signed,
+          note: dto.note,
+          agentId: agent.id,
+          treasuryId,
+        },
+        include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
+      });
+      if (treasuryId) {
+        await tx.transaction.create({
+          data: {
+            date: new Date(dto.date),
+            type: 'تسوية وكيل صرف',
+            treasuryId,
+            cashIn: dto.direction === 'in' ? dto.egpAmount : 0,
+            cashOut: dto.direction === 'out' ? dto.egpAmount : 0,
+            note: dto.note ?? `تسوية ${agent.name}`,
+          },
+        });
+      }
       return agentTx;
     });
   }

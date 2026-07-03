@@ -2,10 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 import { ManifestsRepository } from './manifests.repository';
+import { DriversService } from '../drivers/drivers.service';
 
 @Injectable()
 export class ManifestsService {
-  constructor(private repo: ManifestsRepository) {}
+  constructor(
+    private repo: ManifestsRepository,
+    private driversService: DriversService,
+  ) {}
 
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
   findOne(id: string) { return this.repo.findOne(id); }
@@ -13,7 +17,16 @@ export class ManifestsService {
 
   async create(dto: CreateManifestDto) {
     const finalNo = dto.no?.trim() || (await this.repo.nextNoForClient(dto.clientName));
-    return this.repo.create(dto, finalNo);
+    const manifest = await this.repo.create(dto, finalNo);
+    if (dto.driverName?.trim()) {
+      this.driversService.upsertByName(dto.driverName.trim(), {
+        nationalId: dto.driverNID || undefined,
+        phone: dto.driverPhone || undefined,
+        vehicleNo: dto.vehicleNo || undefined,
+        trailerNo: dto.trailerNo || undefined,
+      }).catch(() => {});
+    }
+    return manifest;
   }
 
   async peekNextNo(clientName: string): Promise<{ no: string }> {

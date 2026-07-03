@@ -4,7 +4,7 @@ import {
 import { Request } from 'express';
 import { PartyRole } from '@prisma/client';
 import { PartiesService } from './parties.service';
-import { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
+import { CreatePartyDto, LinkPartyDto, UpdatePartyDto } from './dto/party.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { AdminOnly } from '../../common/decorators/admin.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
@@ -52,6 +52,18 @@ export class PartiesController {
   @Permissions('settings', 'invoices')
   update(@Param('id') id: string, @Body() dto: UpdatePartyDto) {
     return this.service.update(id, dto);
+  }
+
+  @Patch(':id/link')
+  @Permissions('settings')
+  linkParty(@Param('id') id: string, @Body() dto: LinkPartyDto) {
+    return this.service.linkParty(id, dto);
+  }
+
+  @Delete(':id/link')
+  @Permissions('settings')
+  unlinkParty(@Param('id') id: string) {
+    return this.service.unlinkParty(id);
   }
 
   @Delete(':id')

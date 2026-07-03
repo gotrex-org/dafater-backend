@@ -14,6 +14,7 @@ export class CreateDriverTripDto {
   @IsOptional() @IsString() initialPaidNote?: string;
   @IsOptional() @IsNumber() @Min(0) teaMoney?: number;
   @IsOptional() @IsString() teaTreasuryId?: string;
+  @IsOptional() @IsString() initialPaidTreasuryId?: string;
 }
 
 export class UpdateDriverTripDto {
@@ -38,4 +39,9 @@ export class AddPaymentDto {
 
 export class SetArrivalDto {
   @IsDateString() arrivalDate: string;
+  @IsOptional() @IsNumber() @Min(0) weightDiffAmount?: number;
+}
+
+export class PatchWeightDiffDto {
+  @IsNumber() @Min(0) amount: number;
 }

@@ -13,4 +13,19 @@ export class AuditRepository {
       orderBy: { createdAt: 'desc' },
     });
   }
+
+  findTrash(q: PaginationQueryDto) {
+    return paginate(this.prisma.auditLog, q, {
+      where: { action: 'DELETE', NOT: { snapshot: null } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  findOneByUid(uid: string) {
+    return this.prisma.auditLog.findUniqueOrThrow({ where: { uid } });
+  }
+
+  deleteByUid(uid: string) {
+    return this.prisma.auditLog.delete({ where: { uid } });
+  }
 }

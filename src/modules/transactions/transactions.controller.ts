@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { PostEntryDto, ResolveDto, UpdateTransactionDto } from './dto/transactions.dto';
 import { TransactionsService } from './transactions.service';
@@ -10,8 +11,8 @@ export class TransactionsController {
   constructor(private service: TransactionsService) {}
 
   @Get()
-  list(@Query() q: PaginationQueryDto) {
-    return this.service.list(q);
+  list(@Query() q: PaginationQueryDto, @CurrentUser() user: any) {
+    return this.service.list(q, user);
   }
 
   @Get('pending')
@@ -20,9 +21,9 @@ export class TransactionsController {
   }
 
   @Post()
-  @Permissions('entry')
-  post(@Body() dto: PostEntryDto) {
-    return this.service.post(dto);
+  @Permissions('entry', 'treasury.settle')
+  post(@Body() dto: PostEntryDto, @CurrentUser() user: any) {
+    return this.service.post(dto, user?.intId);
   }
 
   @Patch(':id/resolve')

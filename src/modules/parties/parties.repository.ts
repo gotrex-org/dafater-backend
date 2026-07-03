@@ -5,6 +5,8 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
 
+const LINKED_SELECT = { id: true, uid: true, name: true, role: true } as const;
+
 @Injectable()
 export class PartiesRepository {
   constructor(private prisma: PrismaService) {}
@@ -15,11 +17,22 @@ export class PartiesRepository {
       ...(includeHidden ? {} : { hidden: false }),
       ...(q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : {}),
     };
-    return paginate(this.prisma.party, q, { where, orderBy: { name: 'asc' } });
+    return paginate(this.prisma.party, q, {
+      where,
+      orderBy: { name: 'asc' },
+      include: { linkedParty: { select: LINKED_SELECT }, linkedFrom: { select: LINKED_SELECT } },
+    });
   }
 
   findOneByUid(uid: string) {
-    return this.prisma.party.findUnique({ where: { uid } });
+    return this.prisma.party.findUnique({
+      where: { uid },
+      include: { linkedParty: { select: LINKED_SELECT }, linkedFrom: { select: LINKED_SELECT } },
+    });
+  }
+
+  findRawByUid(uid: string) {
+    return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, uid: true } });
   }
 
   async lastActivityByParty(): Promise<Record<number, Date | null>> {
@@ -31,15 +44,34 @@ export class PartiesRepository {
     return lastById;
   }
 
-  async ledgerTransactions(partyId: number) {
+  async ledgerTransactions(partyIds: number[]) {
     return this.prisma.transaction.findMany({
-      where: { partyId },
+      where: { partyId: { in: partyIds } },
       orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
       include: {
-        invoice: { select: { uid: true, items: { select: { qty: true, price: true, product: { select: { name: true } } } } } },
+        party: { select: { uid: true, name: true, role: true } },
+        invoice: {
+          select: {
+            uid: true,
+            manifests: {
+              select: { date: true, no: true, driverTrips: { select: { arrivalDate: true } } },
+              orderBy: { date: 'asc' },
+              take: 1,
+            },
+            items: { select: { qty: true, price: true, product: { select: { name: true } } } },
+          },
+        },
         deal: { select: { uid: true, items: { select: { qty: true, price: true, product: { select: { name: true } } } } } },
       },
     });
+  }
+
+  setLink(uid: string, linkedPartyId: number) {
+    return this.prisma.party.update({ where: { uid }, data: { linkedPartyId } });
+  }
+
+  clearLink(uid: string) {
+    return this.prisma.party.update({ where: { uid }, data: { linkedPartyId: null } });
   }
 
   create(dto: CreatePartyDto) {

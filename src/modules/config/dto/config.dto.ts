@@ -1,5 +1,7 @@
-import { IsEmail } from 'class-validator';
+import { IsEmail, IsInt, IsNumber, IsOptional, Min } from 'class-validator';
 
 export class UpdateConfigDto {
-  @IsEmail() orderEmail: string;
+  @IsOptional() @IsEmail() orderEmail?: string;
+  @IsOptional() @IsInt() @Min(0) delayGraceDays?: number;
+  @IsOptional() @IsNumber() @Min(0) delayFeePerDay?: number;
 }

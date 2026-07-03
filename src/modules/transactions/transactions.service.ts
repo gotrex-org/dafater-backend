@@ -7,12 +7,16 @@ import { TransactionsRepository } from './transactions.repository';
 export class TransactionsService {
   constructor(private repo: TransactionsRepository) {}
 
-  list(q: PaginationQueryDto) { return this.repo.list(q); }
+  list(q: PaginationQueryDto, user: any) {
+    const ownOnly = !user?.admin && user?.views?.includes('entry.ownOnly');
+    return this.repo.list(q, ownOnly ? user.intId : undefined);
+  }
 
-  async post(dto: PostEntryDto) {
+  async post(dto: PostEntryDto, createdById?: number) {
     const date = new Date(dto.date);
     const amt = dto.amount;
     if (!amt || amt <= 0) throw new BadRequestException('المبلغ غير صحيح');
+    const eb: any = createdById ? { createdById } : {};
 
     switch (dto.type) {
       case EntryType.COLLECT: {
@@ -22,13 +26,13 @@ export class TransactionsService {
         const cashIn = hasRate ? amt / dto.rate! : amt;
         const cNote = hasRate ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashIn.toFixed(2)} $)`.trim() : dto.note;
         const collection = await this.repo.create({
-          date, type: 'تحصيل',
+          ...eb, date, type: 'تحصيل',
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           credit: amt, cashIn, note: cNote,
         });
         if (dto.transferFee && dto.transferFee > 0) {
-          await this.repo.create({ date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية' });
+          await this.repo.create({ ...eb, date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية' });
         }
         return collection;
       }
@@ -42,21 +46,30 @@ export class TransactionsService {
           ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashOut.toFixed(2)} $)`.trim()
           : dto.note;
         return this.repo.create({
-          date, type: 'دفعة لمورد',
+          ...eb, date, type: 'دفعة لمورد',
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           debit: amt, cashOut, note,
         });
       }
 
-      case EntryType.EXPENSE:
+      case EntryType.EXPENSE: {
         this.requirePart(dto.treasuryId, 'الخزينة');
-        return this.repo.create({
-          date, type: 'مصروف',
+        const expTx = await this.repo.create({
+          ...eb, date, type: 'مصروف',
           category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
           treasury: { connect: { uid: dto.treasuryId } },
           cashOut: amt, note: dto.note,
         });
+        if (dto.partyId) {
+          await this.repo.create({
+            ...eb, date, type: 'مصروف على عميل',
+            party: { connect: { uid: dto.partyId } },
+            debit: amt, note: dto.note,
+          });
+        }
+        return expTx;
+      }
 
       case EntryType.TRANSFER: {
         this.requirePart(dto.treasuryId, 'من حساب');
@@ -64,7 +77,7 @@ export class TransactionsService {
         const received = dto.amount2 && dto.amount2 > 0 ? dto.amount2 : amt;
         const currencyMove = received !== amt;
         return this.repo.create({
-          date,
+          ...eb, date,
           type: currencyMove ? 'تحويل عملة' : 'تحويل بين الخزائن',
           treasury: { connect: { uid: dto.treasuryId } },
           treasury2: { connect: { uid: dto.treasuryId2 } },
@@ -76,7 +89,7 @@ export class TransactionsService {
       case EntryType.UNKNOWN_COLLECT:
         this.requirePart(dto.treasuryId, 'الخزينة');
         return this.repo.create({
-          date, type: 'تحصيل مجهول',
+          ...eb, date, type: 'تحصيل مجهول',
           treasury: { connect: { uid: dto.treasuryId } },
           cashIn: amt, pending: true, expAmt: dto.transferFee || 0, note: dto.note,
         });
@@ -84,13 +97,13 @@ export class TransactionsService {
       case EntryType.DEPOSIT:
         this.requirePart(dto.treasuryId, 'الخزنة');
         return this.repo.create({
-          date, type: 'إيداع', treasury: { connect: { uid: dto.treasuryId } }, cashIn: amt, note: dto.note,
+          ...eb, date, type: 'إيداع', treasury: { connect: { uid: dto.treasuryId } }, cashIn: amt, note: dto.note,
         });
 
       case EntryType.WITHDRAW:
         this.requirePart(dto.treasuryId, 'الخزنة');
         return this.repo.create({
-          date, type: 'سحب', treasury: { connect: { uid: dto.treasuryId } }, cashOut: amt, note: dto.note,
+          ...eb, date, type: 'سحب', treasury: { connect: { uid: dto.treasuryId } }, cashOut: amt, note: dto.note,
         });
 
       case EntryType.PARTY_TRANSFER: {
@@ -101,8 +114,8 @@ export class TransactionsService {
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
         await this.repo.createMany([
-          { date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}` },
-          { date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}` },
+          { ...eb, date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}` },
+          { ...eb, date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}` },
         ]);
         return { ok: true };
       }
@@ -110,7 +123,7 @@ export class TransactionsService {
       case EntryType.ADJUST:
         this.requirePart(dto.partyId, 'الحساب');
         return this.repo.create({
-          date, type: 'تسوية',
+          ...eb, date, type: 'تسوية',
           party: { connect: { uid: dto.partyId } },
           debit: dto.direction === 'debit' ? amt : 0,
           credit: dto.direction === 'credit' ? amt : 0,

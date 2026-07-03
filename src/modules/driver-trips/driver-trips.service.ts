@@ -1,9 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AddPaymentDto, CreateDriverTripDto, SetArrivalDto, UpdateDriverTripDto } from './dto/driver-trips.dto';
+import { AddPaymentDto, CreateDriverTripDto, PatchWeightDiffDto, SetArrivalDto, UpdateDriverTripDto } from './dto/driver-trips.dto';
 import { DriverTripsRepository } from './driver-trips.repository';
-
-const DELAY_THRESHOLD = 8;
-const DELAY_RATE = 1200;
+import { DriversService } from '../drivers/drivers.service';
+import { AppConfigService } from '../config/config.service';
 
 function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
@@ -11,7 +10,11 @@ function daysBetween(from: Date, to: Date): number {
 
 @Injectable()
 export class DriverTripsService {
-  constructor(private repo: DriverTripsRepository) {}
+  constructor(
+    private repo: DriverTripsRepository,
+    private driversService: DriversService,
+    private configService: AppConfigService,
+  ) {}
 
   async create(dto: CreateDriverTripDto) {
     let manifestId: number | null = null;
@@ -40,6 +43,9 @@ export class DriverTripsService {
       note: dto.note?.trim() || null,
     });
 
+    // auto-register the driver in the drivers registry (upsert by name — no-op if already exists)
+    this.driversService.upsertByName(dto.driverName.trim()).catch(() => {});
+
     if (dto.initialPaid && dto.initialPaid > 0) {
       if (dto.initialPaid > dto.agreedFreight + 0.001)
         throw new BadRequestException(`الدفعة المقدمة (${dto.initialPaid}) أكبر من الناولون المتفق عليه (${dto.agreedFreight})`);
@@ -50,6 +56,18 @@ export class DriverTripsService {
         paymentType: 'freight',
         note: dto.initialPaidNote?.trim() || 'دفعة أولى',
       });
+      if (dto.initialPaidTreasuryId) {
+        const treasury = await this.repo.findTreasuryByUid(dto.initialPaidTreasuryId);
+        if (treasury) {
+          await this.repo.createTreasuryTx({
+            date: new Date(dto.departureDate),
+            type: 'driverFreight',
+            cashOut: dto.initialPaid,
+            treasuryId: treasury.id,
+            note: `دفعة أولى ناولون (${dto.driverName.trim()})`,
+          });
+        }
+      }
     }
 
     if (dto.teaMoney && dto.teaMoney > 0) {
@@ -81,17 +99,19 @@ export class DriverTripsService {
     const trips = await this.repo.findAll();
     const enriched = trips.map((t) => {
       const payments = (t as any).payments as Array<{ paymentType: string; amount: number }>;
-      const totalFreightPaid = payments.filter((p) => p.paymentType === 'freight').reduce((s, p) => s + p.amount, 0);
-      const totalDelayPaid  = payments.filter((p) => p.paymentType === 'delay').reduce((s, p) => s + p.amount, 0);
-      const remainingFreight = Math.max(0, t.agreedFreight - totalFreightPaid);
-      const remainingDelay   = Math.max(0, (t.delayFee ?? 0) - totalDelayPaid);
-      const trulyClosed = !!t.arrivalDate && remainingDelay === 0;
-      return { ...t, totalFreightPaid, totalDelayPaid, remainingFreight, remainingDelay, trulyClosed };
+      const totalFreightPaid    = payments.filter((p) => p.paymentType === 'freight').reduce((s, p) => s + p.amount, 0);
+      const totalDelayPaid      = payments.filter((p) => p.paymentType === 'delay').reduce((s, p) => s + p.amount, 0);
+      const totalWeightDiffPaid = payments.filter((p) => p.paymentType === 'weightDiff').reduce((s, p) => s + p.amount, 0);
+      const remainingFreight    = Math.max(0, t.agreedFreight - totalFreightPaid);
+      const remainingDelay      = Math.max(0, (t.delayFee ?? 0) - totalDelayPaid);
+      const remainingWeightDiff = Math.max(0, (t.weightDiffAmount ?? 0) - totalWeightDiffPaid);
+      const trulyClosed = !!t.arrivalDate && remainingDelay === 0 && remainingWeightDiff === 0;
+      return { ...t, totalFreightPaid, totalDelayPaid, totalWeightDiffPaid, remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed };
     });
     let result = enriched;
-    if (filters.status === 'open')   result = enriched.filter((t) => !t.arrivalDate || t.remainingDelay > 0);
+    if (filters.status === 'open')   result = enriched.filter((t) => !t.arrivalDate || t.remainingDelay > 0 || t.remainingWeightDiff > 0);
     if (filters.status === 'closed') result = enriched.filter((t) => t.trulyClosed);
-    if (filters.pendingBalance)      result = result.filter((t) => t.remainingFreight > 0 || t.remainingDelay > 0);
+    if (filters.pendingBalance)      result = result.filter((t) => t.remainingFreight > 0 || t.remainingDelay > 0 || t.remainingWeightDiff > 0);
     return result;
   }
 
@@ -126,7 +146,9 @@ export class DriverTripsService {
 
   async addPayment(uid: string, dto: AddPaymentDto) {
     const trip = await this.findOne(uid);
-    const paymentType = dto.paymentType === 'delay' ? 'delay' : 'freight';
+    const paymentType = dto.paymentType === 'delay' ? 'delay'
+                      : dto.paymentType === 'weightDiff' ? 'weightDiff'
+                      : 'freight';
     const payments = (trip as any).payments as Array<{ paymentType: string; amount: number }>;
 
     if (paymentType === 'freight') {
@@ -143,6 +165,13 @@ export class DriverTripsService {
         throw new BadRequestException(`المبلغ (${dto.amount}) أكبر من العطلة المتبقية (${remaining})`);
     }
 
+    if (paymentType === 'weightDiff') {
+      const totalWdPaid = payments.filter((p) => p.paymentType === 'weightDiff').reduce((s, p) => s + p.amount, 0);
+      const remaining = (trip.weightDiffAmount ?? 0) - totalWdPaid;
+      if (dto.amount > remaining + 0.001)
+        throw new BadRequestException(`المبلغ (${dto.amount}) أكبر من فرق الوزن المتبقي (${remaining})`);
+    }
+
     let treasury: { id: number } | null = null;
     if (dto.treasuryId) {
       treasury = await this.repo.findTreasuryByUid(dto.treasuryId) as any;
@@ -156,31 +185,16 @@ export class DriverTripsService {
       note: dto.note?.trim() || null,
     });
     if (treasury) {
-      await this.repo.createTreasuryTx({
-        date: new Date(dto.date),
-        type: paymentType === 'delay' ? 'driverDelay' : 'driverFreight',
-        cashOut: dto.amount,
-        treasuryId: treasury.id,
-        note: dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : `دفع ناولون (${trip.driverName})`),
-      });
+      const txType = paymentType === 'delay' ? 'driverDelay' : paymentType === 'weightDiff' ? 'driverWeightDiff' : 'driverFreight';
+      const txNote = dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : paymentType === 'weightDiff' ? `دفع فرق وزن (${trip.driverName})` : `دفع ناولون (${trip.driverName})`);
+      await this.repo.createTreasuryTx({ date: new Date(dto.date), type: txType, cashOut: dto.amount, treasuryId: treasury.id, note: txNote });
     }
 
+    // Legacy: when paying delay and a weightDiffAmount is bundled, create the weight-diff payment too
     if (paymentType === 'delay' && dto.weightDiffAmount && dto.weightDiffAmount > 0) {
-      await this.repo.createPayment({
-        tripId: trip.id,
-        date: new Date(dto.date),
-        amount: dto.weightDiffAmount,
-        paymentType: 'weightDiff',
-        note: 'فرق وزن',
-      });
+      await this.repo.createPayment({ tripId: trip.id, date: new Date(dto.date), amount: dto.weightDiffAmount, paymentType: 'weightDiff', note: 'فرق وزن' });
       if (treasury) {
-        await this.repo.createTreasuryTx({
-          date: new Date(dto.date),
-          type: 'driverWeightDiff',
-          cashOut: dto.weightDiffAmount,
-          treasuryId: treasury.id,
-          note: `فرق وزن (${trip.driverName})`,
-        });
+        await this.repo.createTreasuryTx({ date: new Date(dto.date), type: 'driverWeightDiff', cashOut: dto.weightDiffAmount, treasuryId: treasury.id, note: `فرق وزن (${trip.driverName})` });
       }
     }
 
@@ -200,10 +214,13 @@ export class DriverTripsService {
 
     const arrival = new Date(dto.arrivalDate);
     const days = daysBetween(trip.departureDate, arrival);
-    const delayDays = Math.max(0, days - DELAY_THRESHOLD);
-    const delayFee = delayDays * DELAY_RATE;
+    const cfg = await this.configService.get();
+    const delayDays = Math.max(0, days - cfg.delayGraceDays);
+    const delayFee = delayDays * cfg.delayFeePerDay;
+    const weightDiffAmount = dto.weightDiffAmount ?? 0;
 
     let delayTxId: number | null = null;
+    let weightDiffTxId: number | null = null;
 
     if (delayFee > 0 && trip.partyId) {
       const tx = await this.repo.createDelayTx({
@@ -216,11 +233,46 @@ export class DriverTripsService {
       delayTxId = tx.id;
     }
 
+    if (weightDiffAmount > 0 && trip.partyId) {
+      const tx = await this.repo.createDelayTx({
+        date: arrival,
+        type: 'truckWeightDiff',
+        debit: weightDiffAmount,
+        partyId: trip.partyId,
+        note: `فرق وزن (${trip.driverName})`,
+      });
+      weightDiffTxId = tx.id;
+    }
+
     return this.repo.update(uid, {
       arrivalDate: arrival,
       delayFee,
+      weightDiffAmount,
       ...(delayTxId ? { delayTxId } : {}),
+      ...(weightDiffTxId ? { weightDiffTxId } : {}),
     });
+  }
+
+  async updateWeightDiff(uid: string, dto: PatchWeightDiffDto) {
+    const trip = await this.findOne(uid) as any;
+    if (!trip.arrivalDate) throw new BadRequestException('لم يتم تسجيل الوصول بعد');
+    const newAmount = dto.amount;
+    const weightDiffTxId: number | null = trip.weightDiffTxId ?? null;
+
+    if (weightDiffTxId) {
+      await this.repo.updateTransactionById(weightDiffTxId, newAmount);
+    } else if (newAmount > 0 && trip.partyId) {
+      const tx = await this.repo.createDelayTx({
+        date: trip.arrivalDate,
+        type: 'truckWeightDiff',
+        debit: newAmount,
+        partyId: trip.partyId,
+        note: `فرق وزن (${trip.driverName})`,
+      });
+      return this.repo.update(uid, { weightDiffAmount: newAmount, weightDiffTxId: tx.id });
+    }
+
+    return this.repo.update(uid, { weightDiffAmount: newAmount });
   }
 
   async remove(uid: string) {

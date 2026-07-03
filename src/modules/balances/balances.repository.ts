@@ -15,6 +15,16 @@ export class BalancesRepository {
     return (party.opening || 0) + (agg._sum.debit || 0) - (agg._sum.credit || 0);
   }
 
+  async partyBalanceMulti(partyIds: number[]): Promise<number> {
+    const parties = await this.prisma.party.findMany({ where: { id: { in: partyIds } } });
+    const agg = await this.prisma.transaction.aggregate({
+      where: { partyId: { in: partyIds } },
+      _sum: { debit: true, credit: true },
+    });
+    const totalOpening = parties.reduce((s, p) => s + (Number(p.opening) || 0), 0);
+    return totalOpening + (agg._sum.debit || 0) - (agg._sum.credit || 0);
+  }
+
   async allPartyBalances(): Promise<Record<number, number>> {
     const parties = await this.prisma.party.findMany();
     const grouped = await this.prisma.transaction.groupBy({

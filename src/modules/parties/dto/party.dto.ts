@@ -20,3 +20,7 @@ export class UpdatePartyDto {
   @IsOptional() @IsNumber() opening?: number;
   @IsOptional() @IsBoolean() hidden?: boolean;
 }
+
+export class LinkPartyDto {
+  @IsString() linkedPartyUid: string;
+}

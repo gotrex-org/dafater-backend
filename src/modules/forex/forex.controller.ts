@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { AdminOnly as Admin } from '../../common/decorators/admin.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
-import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto } from './dto/forex.dto';
+import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto } from './dto/forex.dto';
 import { ForexService } from './forex.service';
 
 @Controller('forex')
@@ -32,6 +32,9 @@ export class ForexController {
 
   @Post(':uid/usd-out')
   usdOut(@Param('uid') uid: string, @Body() dto: UsdOutDto) { return this.service.usdOut(uid, dto); }
+
+  @Post(':uid/settle')
+  settle(@Param('uid') uid: string, @Body() dto: SettleDto) { return this.service.settle(uid, dto); }
 
   @Delete('tx/:txUid')
   @Admin()

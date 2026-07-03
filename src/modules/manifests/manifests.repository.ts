@@ -20,11 +20,18 @@ export class ManifestsRepository {
       gte: q.from ? new Date(q.from) : undefined,
       lt: q.to ? new Date(new Date(q.to).getTime() + 86400000) : undefined,
     };
-    return paginate(this.prisma.manifest, q, { where, orderBy: { date: 'desc' }, include: { items: true } });
+    return paginate(this.prisma.manifest, q, {
+      where,
+      orderBy: { date: 'desc' },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
+    });
   }
 
   findOne(id: string) {
-    return this.prisma.manifest.findUnique({ where: { uid: id }, include: { items: true } });
+    return this.prisma.manifest.findUnique({
+      where: { uid: id },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
+    });
   }
 
   async findForParty(partyUid: string) {
@@ -37,7 +44,7 @@ export class ManifestsRepository {
           { invoice: { party: { uid: partyUid } } },
         ],
       },
-      include: { items: true },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
       orderBy: { date: 'desc' },
     });
   }

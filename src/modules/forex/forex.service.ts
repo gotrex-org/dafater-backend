@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto } from './dto/forex.dto';
+import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto } from './dto/forex.dto';
 import { ForexRepository } from './forex.repository';
 
 @Injectable()
@@ -10,8 +10,8 @@ export class ForexService {
     const agents = await this.repo.findAllAgents();
     return Promise.all(agents.map(async (a) => {
       const txs = await this.repo.findAgentTxsByIdSimple(a.id);
-      const { egpIn, egpOut } = this.calcBalance(txs);
-      return { ...a, egpIn, egpOut, balance: egpIn - egpOut };
+      const { egpIn, egpOut, balance } = this.calcBalance(txs);
+      return { ...a, egpIn, egpOut, balance };
     }));
   }
 
@@ -19,8 +19,8 @@ export class ForexService {
     const agent = await this.repo.findAgentByUid(uid);
     if (!agent) throw new NotFoundException('الوكيل غير موجود');
     const txs = await this.repo.findAgentTxs(agent.id);
-    const { egpIn, egpOut } = this.calcBalance(txs);
-    return { ...agent, egpIn, egpOut, balance: egpIn - egpOut, txs };
+    const { egpIn, egpOut, balance } = this.calcBalance(txs);
+    return { ...agent, egpIn, egpOut, balance, txs };
   }
 
   create(dto: CreateAgentDto) { return this.repo.createAgent(dto); }
@@ -52,6 +52,13 @@ export class ForexService {
     return this.repo.usdOut(agent, party, dto);
   }
 
+  async settle(agentUid: string, dto: SettleDto) {
+    const agent = await this.repo.findAgentByUid(agentUid);
+    if (!agent) throw new NotFoundException();
+    const treasury = dto.treasuryId ? await this.repo.findTreasuryByUid(dto.treasuryId) : null;
+    return this.repo.settle(agent, treasury?.id, dto);
+  }
+
   async deleteTx(txUid: string) {
     const agentTx = await this.repo.findAgentTxByUid(txUid);
     if (!agentTx) throw new NotFoundException();
@@ -61,6 +68,8 @@ export class ForexService {
   private calcBalance(txs: { type: string; egpAmount: number; usdAmount: number; exchangeRate: number }[]) {
     const egpIn = txs.filter((t) => t.type === 'EGP_IN').reduce((s, t) => s + t.egpAmount, 0);
     const egpOut = txs.filter((t) => t.type === 'USD_OUT').reduce((s, t) => s + t.usdAmount * t.exchangeRate, 0);
-    return { egpIn, egpOut };
+    // SETTLE: positive = they paid us (reduces balance); negative = we paid them (increases balance)
+    const settled = txs.filter((t) => t.type === 'SETTLE').reduce((s, t) => s + t.egpAmount, 0);
+    return { egpIn, egpOut, settled, balance: egpIn - egpOut - settled };
   }
 }
