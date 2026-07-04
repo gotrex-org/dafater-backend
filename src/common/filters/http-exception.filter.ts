@@ -25,15 +25,17 @@ function resolveLang(req: Request): string {
 }
 
 function translate(map: MessageMap, key: string, statusCode: number): string {
-  // 1. Exact key match (specific message or NestJS built-in error text)
+  // 1. Exact key match — translates NestJS's built-in English texts (e.g. "Not authenticated").
   if (key && map[key]) return map[key];
 
-  // 2. Status-code fallback
-  const fallback = map[`http.${statusCode}`];
-  if (fallback) return fallback;
+  // 2. Any other specific message (most app code already throws Arabic messages like
+  // "اختر الخزنة" or "المبلغ غير صحيح") — show it as-is rather than hiding it behind a
+  // generic status text.
+  if (key) return key;
 
-  // 3. Return the original key (already Arabic or unknown message)
-  return key || `HTTP ${statusCode}`;
+  // 3. No message at all — fall back to a generic per-status message.
+  const fallback = map[`http.${statusCode}`];
+  return fallback || `HTTP ${statusCode}`;
 }
 
 // Prisma model name (as it appears in schema.prisma) -> i18n key for a friendly "X not found" message.
