@@ -4,6 +4,7 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
@@ -37,6 +38,8 @@ function translate(map: MessageMap, key: string, statusCode: number): string {
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger('ExceptionFilter');
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const res = ctx.getResponse<Response>();
@@ -48,6 +51,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       // A referenced record (e.g. treasury/party uid sent from the client) does not exist.
       if (exception.code === 'P2025' || exception.code === 'P2003') {
+        this.logger.warn(
+          `${req.method} ${req.originalUrl} -> ${exception.code}: ${exception.message} | meta=${JSON.stringify(exception.meta)} | body=${JSON.stringify(req.body)}`,
+        );
         res.status(HttpStatus.BAD_REQUEST).json({
           statusCode: HttpStatus.BAD_REQUEST,
           message: translate(map, 'Related record not found', HttpStatus.BAD_REQUEST),
@@ -55,6 +61,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         return;
       }
       if (exception.code === 'P2002') {
+        this.logger.warn(
+          `${req.method} ${req.originalUrl} -> P2002: ${exception.message} | meta=${JSON.stringify(exception.meta)}`,
+        );
         res.status(HttpStatus.CONFLICT).json({
           statusCode: HttpStatus.CONFLICT,
           message: translate(map, '', HttpStatus.CONFLICT),
@@ -67,6 +76,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
       exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
+
+    if (statusCode === HttpStatus.INTERNAL_SERVER_ERROR) {
+      // Anything reaching here is unexpected — log the real error server-side; the
+      // client only ever sees the generic translated message, never the raw stack.
+      const err = exception as Error;
+      this.logger.error(
+        `${req.method} ${req.originalUrl} -> unhandled ${err?.name || typeof exception}: ${err?.message} | body=${JSON.stringify(req.body)}`,
+        err?.stack,
+      );
+    }
 
     let rawMessage: string;
 
