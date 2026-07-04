@@ -26,6 +26,7 @@
   "Transaction not found": "الحركة المالية غير موجودة",
   "Driver not found": "السائق غير موجود",
   "No party linked to this account": "لا يوجد طرف مرتبط بهذا الحساب",
+  "Related record not found": "أحد العناصر المرتبطة (مثل الخزنة أو الطرف) غير موجود",
 
   "Unauthorized": "يجب تسجيل الدخول أولاً",
   "Forbidden": "ليس لديك صلاحية",

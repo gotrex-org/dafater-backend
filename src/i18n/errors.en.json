@@ -26,6 +26,7 @@
   "Transaction not found": "Transaction not found",
   "Driver not found": "Driver not found",
   "No party linked to this account": "No party is linked to this account",
+  "Related record not found": "One of the linked records (e.g. treasury or party) was not found",
 
   "Unauthorized": "Authentication required",
   "Forbidden": "Access denied",

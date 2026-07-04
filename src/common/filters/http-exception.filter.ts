@@ -6,6 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import * as arMessages from '../../i18n/errors.ar.json';
 import * as enMessages from '../../i18n/errors.en.json';
 
@@ -41,13 +42,31 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request>();
 
+    const lang = resolveLang(req);
+    const map = MESSAGES[lang] ?? MESSAGES['ar'];
+
+    if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+      // A referenced record (e.g. treasury/party uid sent from the client) does not exist.
+      if (exception.code === 'P2025' || exception.code === 'P2003') {
+        res.status(HttpStatus.BAD_REQUEST).json({
+          statusCode: HttpStatus.BAD_REQUEST,
+          message: translate(map, 'Related record not found', HttpStatus.BAD_REQUEST),
+        });
+        return;
+      }
+      if (exception.code === 'P2002') {
+        res.status(HttpStatus.CONFLICT).json({
+          statusCode: HttpStatus.CONFLICT,
+          message: translate(map, '', HttpStatus.CONFLICT),
+        });
+        return;
+      }
+    }
+
     const statusCode =
       exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
-
-    const lang = resolveLang(req);
-    const map = MESSAGES[lang] ?? MESSAGES['ar'];
 
     let rawMessage: string;
 
