@@ -16,7 +16,11 @@ export class TransactionsService {
     const date = new Date(dto.date);
     const amt = dto.amount;
     if (!amt || amt <= 0) throw new BadRequestException('المبلغ غير صحيح');
-    const eb: any = createdById ? { createdById } : {};
+    // `create()` calls below mix relation `connect` syntax (treasury/party/category), which forces
+    // Prisma's "checked" input — raw FK scalars like `createdById` aren't valid there, only the
+    // relation form. `createMany()` is the opposite: it only accepts flat scalars, no relations.
+    const eb: any = createdById ? { createdBy: { connect: { id: createdById } } } : {};
+    const ebFlat: any = createdById ? { createdById } : {};
 
     switch (dto.type) {
       case EntryType.COLLECT: {
@@ -114,8 +118,8 @@ export class TransactionsService {
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
         await this.repo.createMany([
-          { ...eb, date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}` },
-          { ...eb, date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}` },
+          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}` },
+          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}` },
         ]);
         return { ok: true };
       }

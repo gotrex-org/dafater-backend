@@ -36,6 +36,29 @@ function translate(map: MessageMap, key: string, statusCode: number): string {
   return key || `HTTP ${statusCode}`;
 }
 
+// Prisma model name (as it appears in schema.prisma) -> i18n key for a friendly "X not found" message.
+const MODEL_NOT_FOUND_KEY: Record<string, string> = {
+  Party: 'Party not found',
+  TreasuryAccount: 'Treasury not found',
+  Warehouse: 'Warehouse not found',
+  Product: 'Product not found',
+  User: 'User not found',
+  ExpenseCategory: 'Category not found',
+  Deal: 'Deal not found',
+  Invoice: 'Invoice not found',
+  Manifest: 'Manifest not found',
+  Driver: 'Driver not found',
+  Transaction: 'Transaction not found',
+};
+
+// P2025/P2003's `meta.cause` embeds the actual missing model, e.g.
+// "No 'TreasuryAccount' record(s) ... was found for a nested connect on ...".
+function missingModelKey(exception: Prisma.PrismaClientKnownRequestError): string | undefined {
+  const cause = (exception.meta as { cause?: string } | undefined)?.cause;
+  const modelName = cause?.match(/'(\w+)' record/)?.[1];
+  return modelName ? MODEL_NOT_FOUND_KEY[modelName] : undefined;
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -54,9 +77,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
         this.logger.warn(
           `${req.method} ${req.originalUrl} -> ${exception.code}: ${exception.message} | meta=${JSON.stringify(exception.meta)} | body=${JSON.stringify(req.body)}`,
         );
+        const key = missingModelKey(exception) || 'Related record not found';
         res.status(HttpStatus.BAD_REQUEST).json({
           statusCode: HttpStatus.BAD_REQUEST,
-          message: translate(map, 'Related record not found', HttpStatus.BAD_REQUEST),
+          message: translate(map, key, HttpStatus.BAD_REQUEST),
         });
         return;
       }
