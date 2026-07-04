@@ -1,0 +1,614 @@
+// Dafater (دفاتر) — Postgres schema
+// Migrated from the single-file localStorage app. All monetary balances
+// (party ledger, treasury, stock) are DERIVED from the immutable Transaction
+// log + Adjustment records, exactly like the original app. Nothing is stored
+// pre-aggregated.
+//
+// IDs: every table has an integer primary key `id` (autoincrement) plus a
+// stable, unique `uid` (cuid). Foreign keys are INTEGERS that reference the
+// parent's `id` (normal relational design). The API/frontend, however, speak
+// only `uid`: requests carry uids, services resolve them to ids on write, and
+// a global interceptor maps `id` -> `uid` (and FK ids -> related uids) on read,
+// so the integer ids never leave the API.
+//
+// NOTE: money fields use Float for a clean first-pass scaffold. For production
+// accounting, switch to `Decimal @db.Decimal(14, 2)` (or integer cents).
+
+generator client {
+  provider      = "prisma-client-js"
+  // native = local dev; linux-musl-openssl-3.0.x = node:20-alpine (Docker)
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------- enums -----------------------------
+
+enum PartyRole {
+  CLIENT
+  SUPPLIER
+  AGENT // صاحب عمولة
+}
+
+enum PartyType {
+  INVOICE // فاتورة
+  LEDGER // حساب جاري
+}
+
+enum Currency {
+  EGP
+  USD
+}
+
+enum InvoiceKind {
+  SALE // بيع
+  PURCHASE // شراء
+}
+
+enum OrderStatus {
+  NEW
+  DONE
+}
+
+// ----------------------------- enums (cont.) -----------------------------
+
+enum UserRole {
+  STAFF
+  CUSTOMER
+}
+
+// ----------------------------- auth -----------------------------
+
+model User {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  username  String?  @unique
+  name      String
+  pinHash   String
+  admin     Boolean  @default(false)
+  // Allowed view/permission keys: dash, invoices, deals, orders, requests,
+  // manifests, entry, inventory, ledger, treasury, settings, audit
+  // Sub-keys: entry.*, invoices.*, deals.*, manifests.driverTrips,
+  //           inventory.addWarehouse, inventory.loans,
+  //           treasury.add, treasury.forex, settings.users, settings.general
+  views          String[] @default([])
+  // UIDs of parties this user can view in ledger; empty = all parties
+  ledgerPartyIds String[] @default([])
+  // Incremented to revoke all outstanding JWTs (e.g. on PIN change / forced logout)
+  tokenVersion   Int      @default(0)
+  role         UserRole @default(STAFF)
+  party        Party?   @relation(fields: [partyId], references: [id])
+  partyId      Int?
+  createdTransactions Transaction[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// --------------------------- master data ---------------------------
+
+model Party {
+  id      Int        @id @default(autoincrement())
+  uid     String     @unique @default(cuid())
+  name     String
+  role     PartyRole
+  type     PartyType? // only meaningful for clients
+  phone    String?
+  currency Currency   @default(EGP) // العملة اللي بيتعامل بيها الطرف
+  opening  Float      @default(0) // opening balance (+ = owes us)
+  hidden   Boolean    @default(false)
+
+  // self-relation: link a client to a supplier so they share one ledger
+  linkedPartyId Int?    @unique
+  linkedParty   Party?  @relation("PartyLink", fields: [linkedPartyId], references: [id], onDelete: SetNull)
+  linkedFrom    Party?  @relation("PartyLink")
+
+  transactions     Transaction[]
+  invoices         Invoice[]
+  dealsAsClient    Deal[]   @relation("DealClient")
+  dealsAsSupplier  Deal[]   @relation("DealSupplier")
+  requests         Request[]
+  userAccounts     User[]
+  orders           Order[]
+  dollarTxs        DollarAgentTx[]
+  driverTrips      DriverTrip[]
+  loans            Loan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+}
+
+model TreasuryAccount {
+  id       Int      @id @default(autoincrement())
+  uid      String   @unique @default(cuid())
+  name     String
+  opening  Float    @default(0)
+  currency Currency @default(EGP)
+
+  transactions      Transaction[] @relation("TxTreasury")
+  transactionsAlt   Transaction[] @relation("TxTreasury2")
+  invoices          Invoice[]
+  deals             Deal[]
+  dollarTxs         DollarAgentTx[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Warehouse {
+  id   Int    @id @default(autoincrement())
+  uid  String @unique @default(cuid())
+  name String
+
+  invoices    Invoice[]
+  adjustments Adjustment[]
+  loans       Loan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id   Int     @id @default(autoincrement())
+  uid  String  @unique @default(cuid())
+  name String
+  unit String?
+  service Boolean @default(false) // a charge/service line (نولون، تخليص…) — excluded from stock
+
+  invoiceItems InvoiceItem[]
+  dealItems    DealItem[]
+  adjustments  Adjustment[]
+  loans        Loan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ExpenseCategory {
+  id   Int    @id @default(autoincrement())
+  uid  String @unique @default(cuid())
+  name String
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ------------------------- ledger / treasury -------------------------
+// Single source of truth. Every financial movement is a Transaction.
+
+model Transaction {
+  id   Int      @id @default(autoincrement())
+  uid  String   @unique @default(cuid())
+  date DateTime
+  type String // فاتورة بيع / تحصيل / مصروف / تحويل بين الخزائن ... (kept as label)
+
+  party   Party?  @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  partyId Int?
+
+  treasury   TreasuryAccount? @relation("TxTreasury", fields: [treasuryId], references: [id], onDelete: Cascade)
+  treasuryId Int?
+
+  treasury2   TreasuryAccount? @relation("TxTreasury2", fields: [treasuryId2], references: [id], onDelete: Cascade)
+  treasuryId2 Int?
+
+  category   ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId Int?
+
+  debit    Float @default(0) // owed to us (party) / paid out
+  credit   Float @default(0) // we owe (party) / received
+  cashIn   Float @default(0) // into treasury
+  cashOut  Float @default(0) // out of treasury
+  cashIn2  Float @default(0) // into treasury2
+  cashOut2 Float @default(0) // out of treasury2
+  expAmt   Float @default(0) // commission/expense amount
+
+  // "تحصيل مجهول": cash received whose owner is unknown; sits pending until
+  // resolved to a party, then credited to their ledger.
+  pending Boolean @default(false)
+
+  note String?
+
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int?
+
+  deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId Int?
+
+  createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdById Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([partyId])
+  @@index([treasuryId])
+  @@index([date])
+}
+
+// ----------------------------- invoices -----------------------------
+
+model Invoice {
+  id   Int         @id @default(autoincrement())
+  uid  String      @unique @default(cuid())
+  kind InvoiceKind
+  no   String
+  date DateTime
+
+  party   Party  @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyId Int
+
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouseId Int
+
+  currency   Currency         @default(EGP)
+
+  paid       Float            @default(0)
+  treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId Int?
+
+  note String?
+
+  commissionAmount Float?
+  commissionTo     String?
+
+  items        InvoiceItem[]
+  transactions Transaction[]
+  manifests    Manifest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@index([partyId])
+}
+
+model InvoiceItem {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId Int
+  qty       Float
+  price     Float
+
+  @@index([invoiceId])
+}
+
+// ------------------------------ deals ------------------------------
+// External pass-through sales (no stock impact).
+
+model Deal {
+  id   Int      @id @default(autoincrement())
+  uid  String   @unique @default(cuid())
+  no   String
+  date DateTime
+
+  client   Party  @relation("DealClient", fields: [clientId], references: [id], onDelete: Restrict)
+  clientId Int
+
+  supplier   Party  @relation("DealSupplier", fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierId Int
+
+  paidIn     Float            @default(0)
+  paidOut    Float            @default(0)
+  nawlon     Float            @default(0)
+  treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId Int?
+
+  note String?
+
+  items        DealItem[]
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DealItem {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  deal      Deal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId    Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId Int
+  qty       Float
+  price     Float // sell price (to client)
+  buyPrice  Float @default(0) // buy price (from supplier)
+
+  @@index([dealId])
+}
+
+// -------------------------- stock adjustments --------------------------
+
+model Adjustment {
+  id          Int       @id @default(autoincrement())
+  uid         String    @unique @default(cuid())
+  date        DateTime
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  warehouseId Int
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   Int
+  qty         Float // net change (+/-)
+  note        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([warehouseId])
+  @@index([productId])
+}
+
+// ------------------------------ requests ------------------------------
+
+model Request {
+  id       Int      @id @default(autoincrement())
+  uid      String   @unique @default(cuid())
+  date     DateTime
+  client   Party    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientId Int
+  note     String?
+  done     Boolean  @default(false)
+  doneDate DateTime?
+
+  items RequestItem[]
+
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+}
+
+model RequestItem {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId Int
+  name      String // free text (not linked to Product)
+  qty       Float // ordered quantity
+  received  Float   @default(0) // delivered so far; remaining = qty - received
+}
+
+// ------------------------------ manifests ------------------------------
+
+model Manifest {
+  id          Int      @id @default(autoincrement())
+  uid         String   @unique @default(cuid())
+  no          String
+  date        DateTime
+  invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId   Int?
+  clientName  String
+  vehicleNo   String?
+  trailerNo   String?
+  driverName  String?
+  driverPhone String?
+  driverNID   String?
+  clearingAgent String?
+  note        String?
+
+  items       ManifestItem[]
+  driverTrips DriverTrip[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ManifestItem {
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId Int
+  name       String
+  qty        Float
+}
+
+// -------------------------- driver trips --------------------------
+
+model Driver {
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
+  name       String   @unique
+  nationalId String?
+  phone      String?
+  phone2     String?
+  vehicleNo  String?
+  trailerNo  String?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model DriverTrip {
+  id            Int       @id @default(autoincrement())
+  uid           String    @unique @default(cuid())
+
+  manifest      Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId    Int?
+
+  party         Party?    @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId       Int?
+
+  driverName    String
+  vehicleNo     String?
+  trailerNo     String?
+  clientName    String
+
+  departureDate DateTime
+  agreedFreight Float                    // الناولون المتفق عليه
+  note          String?
+
+  arrivalDate      DateTime?              // set when trip ends
+  delayTxId        Int?                   // transaction id for posted delay fee
+  delayFee         Float     @default(0)  // computed delay fee (1200/day after day 8)
+  weightDiffAmount Float     @default(0)  // فرق وزن charged to client at arrival
+  weightDiffTxId   Int?                   // transaction id for the weight-diff party debit
+
+  payments      DriverPayment[]
+
+  createdAt     DateTime  @default(now())
+
+  @@index([manifestId])
+  @@index([partyId])
+  @@map("driver_trips")
+}
+
+model DriverPayment {
+  id        Int        @id @default(autoincrement())
+  uid       String     @unique @default(cuid())
+  trip      DriverTrip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripId    Int
+  date        DateTime
+  amount      Float
+  paymentType String   @default("freight")  // freight | delay
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([tripId])
+  @@map("driver_payments")
+}
+
+// -------------------------- public orders --------------------------
+
+model Order {
+  id     Int         @id @default(autoincrement())
+  uid    String      @unique @default(cuid())
+  date   DateTime    @default(now())
+  name   String
+  phone  String?
+  note   String?
+  status OrderStatus @default(NEW)
+
+  items OrderItem[]
+
+  party   Party? @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId Int?
+
+  createdAt DateTime @default(now())
+}
+
+model OrderItem {
+  id       Int    @id @default(autoincrement())
+  uid      String @unique @default(cuid())
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId  Int
+  name     String
+  qty      Float
+  received Float  @default(0)
+}
+
+// ------------------------------ config ------------------------------
+
+model Config {
+  id             Int    @id @default(1) // singleton row
+  orderEmail     String @default("yusuftarek.97@gmail.com")
+  delayGraceDays Int    @default(8)    // أيام الحرية قبل بداية العطلة
+  delayFeePerDay Float  @default(1200) // قيمة يوم العطلة بالجنيه
+}
+
+// ------------------------------ audit log ------------------------------
+// One row per mutating request (who did what, and when).
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  userName  String
+  action    String   // CREATE | UPDATE | DELETE
+  entity    String   // invoices, manifests, parties, ...
+  entityUid String?  // uid of the affected record (for deep-link / undo)
+  summary   String?  // friendly label (e.g. invoice no / party name)
+  diff      Json?    // per-field { from, to } map — UPDATE only
+  snapshot  Json?    // full entity state captured before DELETE (used for undo)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ------------------------------ borrowed goods (العارية) ------------------------------
+
+model Loan {
+  id              Int       @id @default(autoincrement())
+  uid             String    @unique @default(cuid())
+  date            DateTime
+  borrowerName    String?
+  partyId         Int?
+  party           Party?    @relation(fields: [partyId], references: [id])
+  qty             Float
+  note            String?
+  status          String    @default("OPEN")  // OPEN | RETURNED
+  returnType      String?                      // GOODS | CASH | DEBT | MIXED
+  returnedQty     Float     @default(0)        // cumulative GOODS returned
+  cashReturnedQty Float     @default(0)        // cumulative CASH/DEBT qty
+  returnDate      DateTime?
+  returnNote      String?
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId       Int
+  warehouse       Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouseId     Int
+  returns         LoanReturn[]
+  createdAt       DateTime  @default(now())
+
+  @@index([warehouseId])
+  @@index([productId])
+  @@map("loans")
+}
+
+model LoanReturn {
+  id           Int      @id @default(autoincrement())
+  uid          String   @unique @default(cuid())
+  loan         Loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  loanId       Int
+  date         DateTime
+  returnType   String   // GOODS | CASH | DEBT
+  qty          Float
+  pricePerUnit Float?
+  note         String?
+  txId         Int?
+  createdAt    DateTime @default(now())
+
+  @@map("loan_returns")
+}
+
+// ------------------------------ forex / dollar agents ------------------------------
+
+model DollarAgent {
+  id    Int    @id @default(autoincrement())
+  uid   String @unique @default(cuid())
+  name  String
+  phone String?
+  note  String?
+
+  txs DollarAgentTx[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DollarAgentTx {
+  id           Int         @id @default(autoincrement())
+  uid          String      @unique @default(cuid())
+  date         DateTime
+  agent        DollarAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agentId      Int
+  type         String      // EGP_IN | USD_OUT
+
+  // EGP_IN: EGP given to agent
+  egpAmount    Float       @default(0)
+  treasury     TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId   Int?
+
+  // USD_OUT: agent delivers USD to client
+  usdAmount    Float       @default(0)
+  exchangeRate Float       @default(0)
+  party        Party?      @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  partyId      Int?
+
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId])
+}
