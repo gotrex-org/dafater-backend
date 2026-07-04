@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Public } from '../../common/decorators/public.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
@@ -8,6 +9,14 @@ import { ProductsService } from './products.service';
 @Permissions('inventory', 'invoices', 'settings', 'entry')
 export class ProductsController {
   constructor(private service: ProductsService) {}
+
+  // No JWT at all — feeds product-name suggestions to the public (no-login) order form.
+  @Public()
+  @Permissions()
+  @Get('public-catalog')
+  publicCatalog() {
+    return this.service.catalog();
+  }
 
   // No @Permissions() here overrides the class-level — accessible to any authenticated user (including customers)
   @Get('catalog')
