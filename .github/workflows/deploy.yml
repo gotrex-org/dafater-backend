@@ -17,8 +17,9 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             set -e
-            cd ${{ secrets.SERVER_PATH }}/dafater-backend
+            cd /root/projects/dafater-backend
             git pull origin main
+            cd /root/projects
             docker compose build backend
             docker compose up -d --no-deps backend
             docker image prune -f
