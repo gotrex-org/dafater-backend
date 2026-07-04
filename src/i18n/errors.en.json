@@ -1,0 +1,36 @@
+{
+  "_comment": "English error messages. Keys mirror errors.ar.json exactly.",
+
+  "http.400": "Bad request",
+  "http.401": "Authentication required",
+  "http.403": "You do not have permission to perform this action",
+  "http.404": "The requested resource was not found",
+  "http.409": "Data conflict",
+  "http.422": "Unprocessable data",
+  "http.429": "Too many requests, please try again later",
+  "http.500": "An internal server error occurred, please try again later",
+
+  "Not authenticated": "Authentication required",
+  "Admins only": "This action is restricted to administrators",
+  "Insufficient permissions": "You do not have sufficient permissions",
+
+  "Invoice not found": "Invoice not found",
+  "Party not found": "Party not found",
+  "Warehouse not found": "Warehouse not found",
+  "Product not found": "Product not found",
+  "User not found": "User not found",
+  "Category not found": "Category not found",
+  "Deal not found": "Deal not found",
+  "Request not found": "Request not found",
+  "Manifest not found": "Manifest not found",
+  "Transaction not found": "Transaction not found",
+  "Driver not found": "Driver not found",
+  "No party linked to this account": "No party is linked to this account",
+
+  "Unauthorized": "Authentication required",
+  "Forbidden": "Access denied",
+  "Bad Request": "Bad request",
+  "Not Found": "Resource not found",
+  "Internal Server Error": "Internal server error",
+  "Too Many Requests": "Too many requests, please try again later"
+}

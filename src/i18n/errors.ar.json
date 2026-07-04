@@ -1,0 +1,36 @@
+{
+  "_comment": "Arabic error messages. Keys: http.<status> = status-code fallback; all others = specific message lookup.",
+
+  "http.400": "بيانات غير صحيحة",
+  "http.401": "يجب تسجيل الدخول أولاً",
+  "http.403": "ليس لديك صلاحية للقيام بهذا الإجراء",
+  "http.404": "العنصر المطلوب غير موجود",
+  "http.409": "تعارض في البيانات",
+  "http.422": "بيانات غير قابلة للمعالجة",
+  "http.429": "طلبات كثيرة جداً، حاول مرة أخرى بعد قليل",
+  "http.500": "حدث خطأ في الخادم، يرجى المحاولة لاحقاً",
+
+  "Not authenticated": "يجب تسجيل الدخول أولاً",
+  "Admins only": "هذا الإجراء للمديرين فقط",
+  "Insufficient permissions": "ليس لديك صلاحية كافية",
+
+  "Invoice not found": "الفاتورة غير موجودة",
+  "Party not found": "الطرف غير موجود",
+  "Warehouse not found": "المخزن غير موجود",
+  "Product not found": "المنتج غير موجود",
+  "User not found": "المستخدم غير موجود",
+  "Category not found": "الفئة غير موجودة",
+  "Deal not found": "الصفقة غير موجودة",
+  "Request not found": "الطلب غير موجود",
+  "Manifest not found": "الكشف غير موجود",
+  "Transaction not found": "الحركة المالية غير موجودة",
+  "Driver not found": "السائق غير موجود",
+  "No party linked to this account": "لا يوجد طرف مرتبط بهذا الحساب",
+
+  "Unauthorized": "يجب تسجيل الدخول أولاً",
+  "Forbidden": "ليس لديك صلاحية",
+  "Bad Request": "بيانات غير صحيحة",
+  "Not Found": "العنصر غير موجود",
+  "Internal Server Error": "حدث خطأ في الخادم",
+  "Too Many Requests": "طلبات كثيرة جداً، حاول مرة أخرى بعد قليل"
+}
