@@ -87,6 +87,17 @@ export class DriverTripsRepository {
     return this.prisma.transaction.update({ where: { id }, data: { debit } });
   }
 
+  updateTransactionAmountDate(id: number, debit: number, date: Date) {
+    return this.prisma.transaction.update({ where: { id }, data: { debit, date } });
+  }
+
+  // Retires a delay/weight-diff charge transaction that's no longer owed
+  // (e.g. arrival date corrected so the recomputed fee is 0). Also nulls out
+  // the driverTrip.delayTxId/weightDiffTxId pointer — see transaction-cascade.ts.
+  deleteTransaction(id: number) {
+    return deleteTransactionAndEffects(this.prisma, id);
+  }
+
   remove(uid: string) {
     return this.prisma.driverTrip.delete({ where: { uid } });
   }

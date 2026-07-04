@@ -198,21 +198,28 @@ export class DriverTripsService {
     return this.findOne(uid);
   }
 
+  // Also used to CORRECT an already-registered arrival: recomputes delayFee
+  // from the (possibly new) arrivalDate and retires/updates/creates the
+  // linked delay & weight-diff charge transactions to match.
   async setArrival(uid: string, dto: SetArrivalDto) {
-    const trip = await this.findOne(uid);
-    if (trip.arrivalDate) throw new BadRequestException('تم تسجيل الوصول مسبقًا');
+    const trip = await this.findOne(uid) as any;
 
     const arrival = new Date(dto.arrivalDate);
     const days = daysBetween(trip.departureDate, arrival);
     const cfg = await this.configService.get();
     const delayDays = Math.max(0, days - cfg.delayGraceDays);
     const delayFee = delayDays * cfg.delayFeePerDay;
-    const weightDiffAmount = dto.weightDiffAmount ?? 0;
+    const weightDiffAmount = dto.weightDiffAmount ?? trip.weightDiffAmount ?? 0;
 
-    let delayTxId: number | null = null;
-    let weightDiffTxId: number | null = null;
+    let delayTxId: number | null = trip.delayTxId ?? null;
+    let weightDiffTxId: number | null = trip.weightDiffTxId ?? null;
 
-    if (delayFee > 0 && trip.partyId) {
+    if (delayTxId && delayFee <= 0) {
+      await this.repo.deleteTransaction(delayTxId);
+      delayTxId = null;
+    } else if (delayTxId && delayFee > 0) {
+      await this.repo.updateTransactionAmountDate(delayTxId, delayFee, arrival);
+    } else if (!delayTxId && delayFee > 0 && trip.partyId) {
       const tx = await this.repo.createDelayTx({
         date: arrival,
         type: 'truckDelay',
@@ -223,7 +230,12 @@ export class DriverTripsService {
       delayTxId = tx.id;
     }
 
-    if (weightDiffAmount > 0 && trip.partyId) {
+    if (weightDiffTxId && weightDiffAmount <= 0) {
+      await this.repo.deleteTransaction(weightDiffTxId);
+      weightDiffTxId = null;
+    } else if (weightDiffTxId && weightDiffAmount > 0) {
+      await this.repo.updateTransactionAmountDate(weightDiffTxId, weightDiffAmount, arrival);
+    } else if (!weightDiffTxId && weightDiffAmount > 0 && trip.partyId) {
       const tx = await this.repo.createDelayTx({
         date: arrival,
         type: 'truckWeightDiff',
@@ -238,8 +250,8 @@ export class DriverTripsService {
       arrivalDate: arrival,
       delayFee,
       weightDiffAmount,
-      ...(delayTxId ? { delayTxId } : {}),
-      ...(weightDiffTxId ? { weightDiffTxId } : {}),
+      delayTxId,
+      weightDiffTxId,
     });
   }
 
