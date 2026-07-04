@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { TreasuryDto } from './dto/treasury.dto';
 import { TreasuryService } from './treasury.service';
@@ -10,14 +11,14 @@ export class TreasuryController {
   constructor(private service: TreasuryService) {}
 
   @Get()
-  findAll(@Query() q: PaginationQueryDto) {
-    return this.service.findAll(q);
+  findAll(@Query() q: PaginationQueryDto, @CurrentUser() user: any) {
+    return this.service.findAll(q, user);
   }
 
   @Get('movements')
   @Permissions('treasury')
-  movements(@Query() q: PaginationQueryDto) {
-    return this.service.movements(q);
+  movements(@Query() q: PaginationQueryDto, @CurrentUser() user: any) {
+    return this.service.movements(q, user);
   }
 
   @Get('expenses-by-category')

@@ -12,6 +12,7 @@ function fmt(u: any) {
     admin: u.admin,
     views: u.views,
     ledgerPartyIds: u.ledgerPartyIds ?? [],
+    treasuryIds: u.treasuryIds ?? [],
     role: u.role,
     createdAt: u.createdAt,
     party: u.party ? { id: u.party.uid, name: u.party.name } : null,
@@ -28,8 +29,8 @@ export class UsersService {
   }
 
   async create(dto: CreateUserDto) {
-    const { pin, partyId, username, ledgerPartyIds, ...rest } = dto;
-    const data: any = { ...rest, views: dto.views ?? [], ledgerPartyIds: ledgerPartyIds ?? [], pinHash: await bcrypt.hash(pin, 10), ...(username ? { username } : {}) };
+    const { pin, partyId, username, ledgerPartyIds, treasuryIds, ...rest } = dto;
+    const data: any = { ...rest, views: dto.views ?? [], ledgerPartyIds: ledgerPartyIds ?? [], treasuryIds: treasuryIds ?? [], pinHash: await bcrypt.hash(pin, 10), ...(username ? { username } : {}) };
     if (partyId) {
       const party = await this.repo.findPartyByUid(partyId);
       data.partyId = party.id;
@@ -39,9 +40,10 @@ export class UsersService {
   }
 
   async update(id: string, dto: UpdateUserDto) {
-    const { pin, partyId, username, ledgerPartyIds, ...rest } = dto;
+    const { pin, partyId, username, ledgerPartyIds, treasuryIds, ...rest } = dto;
     const data: any = { ...rest };
     if (ledgerPartyIds !== undefined) data.ledgerPartyIds = ledgerPartyIds;
+    if (treasuryIds !== undefined) data.treasuryIds = treasuryIds;
     if (username !== undefined) data.username = username || null;
     if (pin) {
       data.pinHash = await bcrypt.hash(pin, 10);

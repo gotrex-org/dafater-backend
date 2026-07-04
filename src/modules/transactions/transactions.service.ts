@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { EntryType, PostEntryDto, ResolveDto, UpdateTransactionDto } from './dto/transactions.dto';
 import { TransactionsRepository } from './transactions.repository';
@@ -12,10 +12,13 @@ export class TransactionsService {
     return this.repo.list(q, ownOnly ? user.intId : undefined);
   }
 
-  async post(dto: PostEntryDto, createdById?: number) {
+  async post(dto: PostEntryDto, user?: any) {
+    const createdById = user?.intId;
     const date = new Date(dto.date);
     const amt = dto.amount;
     if (!amt || amt <= 0) throw new BadRequestException('المبلغ غير صحيح');
+    this.requireTreasuryAllowed(dto.treasuryId, user);
+    this.requireTreasuryAllowed(dto.treasuryId2, user);
     // `create()` calls below mix relation `connect` syntax (treasury/party/category), which forces
     // Prisma's "checked" input — raw FK scalars like `createdById` aren't valid there, only the
     // relation form. `createMany()` is the opposite: it only accepts flat scalars, no relations.
@@ -170,5 +173,13 @@ export class TransactionsService {
 
   private requirePart(value: string | undefined, label: string) {
     if (!value) throw new BadRequestException(`اختر ${label}`);
+  }
+
+  private requireTreasuryAllowed(treasuryUid: string | undefined, user?: any) {
+    if (!treasuryUid || !user || user.admin) return;
+    const allowed: string[] = user.treasuryIds ?? [];
+    if (allowed.length && !allowed.includes(treasuryUid)) {
+      throw new ForbiddenException('غير مصرح لك بالتعامل مع هذه الخزينة');
+    }
   }
 }

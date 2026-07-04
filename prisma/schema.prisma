@@ -77,6 +77,8 @@ model User {
   views          String[] @default([])
   // UIDs of parties this user can view in ledger; empty = all parties
   ledgerPartyIds String[] @default([])
+  // UIDs of treasuries this user can see/transact against; empty = all treasuries
+  treasuryIds    String[] @default([])
   // Incremented to revoke all outstanding JWTs (e.g. on PIN change / forced logout)
   tokenVersion   Int      @default(0)
   role         UserRole @default(STAFF)

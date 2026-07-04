@@ -43,6 +43,7 @@ export class AuthService {
         admin: user.admin,
         views: user.views,
         ledgerPartyIds: user.ledgerPartyIds ?? [],
+        treasuryIds: user.treasuryIds ?? [],
         role: user.role,
         ...(user.party ? { partyId: user.party.uid, partyName: user.party.name } : {}),
       },

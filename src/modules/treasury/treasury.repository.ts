@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
@@ -8,15 +8,18 @@ import { TreasuryDto } from './dto/treasury.dto';
 export class TreasuryRepository {
   constructor(private prisma: PrismaService) {}
 
-  findAll(q: PaginationQueryDto) {
-    return paginate(this.prisma.treasuryAccount, q, { orderBy: { name: 'asc' } });
+  findAll(q: PaginationQueryDto, allowedUids?: string[]) {
+    return paginate(this.prisma.treasuryAccount, q, {
+      ...(allowedUids ? { where: { uid: { in: allowedUids } } } : {}),
+      orderBy: { name: 'asc' },
+    });
   }
 
   findByUid(uid: string) {
     return this.prisma.treasuryAccount.findUnique({ where: { uid }, select: { id: true } });
   }
 
-  async movements(q: PaginationQueryDto) {
+  async movements(q: PaginationQueryDto, allowedUids?: string[]) {
     const cashCondition = {
       OR: [
         { cashIn: { gt: 0 } }, { cashOut: { gt: 0 } },
@@ -25,8 +28,15 @@ export class TreasuryRepository {
     };
     const andConditions: any[] = [cashCondition];
     if (q.treasuryId) {
+      if (allowedUids && !allowedUids.includes(q.treasuryId)) {
+        throw new ForbiddenException('غير مصرح لك بالاطلاع على هذه الخزينة');
+      }
       const acc = await this.prisma.treasuryAccount.findUnique({ where: { uid: q.treasuryId }, select: { id: true } });
       if (acc) andConditions.push({ OR: [{ treasuryId: acc.id }, { treasuryId2: acc.id }] });
+    } else if (allowedUids) {
+      const accs = await this.prisma.treasuryAccount.findMany({ where: { uid: { in: allowedUids } }, select: { id: true } });
+      const ids = accs.map((a) => a.id);
+      andConditions.push({ OR: [{ treasuryId: { in: ids } }, { treasuryId2: { in: ids } }] });
     }
     return paginate(this.prisma.transaction, q, {
       where: andConditions.length === 1 ? andConditions[0] : { AND: andConditions },

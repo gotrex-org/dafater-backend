@@ -42,6 +42,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       admin: user.admin,
       views: user.views,
       ledgerPartyIds: user.ledgerPartyIds ?? [],
+      treasuryIds: user.treasuryIds ?? [],
       role: user.role,
       partyId: user.party?.uid,
       partyIntId: user.party?.id,

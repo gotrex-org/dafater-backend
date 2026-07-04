@@ -12,6 +12,7 @@ export class CreateUserDto {
   @IsOptional() @IsBoolean() admin?: boolean;
   @IsOptional() @IsArray() @IsString({ each: true }) views?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) ledgerPartyIds?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) treasuryIds?: string[];
   @IsOptional() @IsEnum(UserRole) role?: UserRole;
   @IsOptional() @IsString() partyId?: string;
 }
@@ -23,6 +24,7 @@ export class UpdateUserDto {
   @IsOptional() @IsBoolean() admin?: boolean;
   @IsOptional() @IsArray() @IsString({ each: true }) views?: string[];
   @IsOptional() @IsArray() @IsString({ each: true }) ledgerPartyIds?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) treasuryIds?: string[];
   @IsOptional() @IsEnum(UserRole) role?: UserRole;
   @IsOptional() @IsString() partyId?: string;
 }

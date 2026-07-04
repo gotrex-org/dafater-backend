@@ -23,7 +23,7 @@ export class TransactionsController {
   @Post()
   @Permissions('entry', 'treasury.settle')
   post(@Body() dto: PostEntryDto, @CurrentUser() user: any) {
-    return this.service.post(dto, user?.intId);
+    return this.service.post(dto, user);
   }
 
   @Patch(':id/resolve')
