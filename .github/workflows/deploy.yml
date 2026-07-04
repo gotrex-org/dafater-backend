@@ -16,6 +16,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
+            set -e
             cd ${{ secrets.SERVER_PATH }}/dafater-backend
             git pull origin main
             docker compose build backend
