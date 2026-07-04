@@ -18,7 +18,8 @@ jobs:
           script: |
             set -e
             cd /root/projects/dafater-backend
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             cd /root/projects/dafater-backend/infra
             docker compose build backend
             docker compose up -d --no-deps backend
