@@ -29,14 +29,17 @@ export class TransactionsService {
         const hasRate = !!(dto.rate && dto.rate > 0);
         const cashIn = hasRate ? amt / dto.rate! : amt;
         const cNote = hasRate ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashIn.toFixed(2)} $)`.trim() : dto.note;
+        const hasFee = !!(dto.transferFee && dto.transferFee > 0);
+        const collectGroupId = hasFee ? crypto.randomUUID() : undefined;
         const collection = await this.repo.create({
           ...eb, date, type: 'تحصيل',
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           credit: amt, cashIn, note: cNote,
+          ...(collectGroupId ? { groupId: collectGroupId } : {}),
         });
-        if (dto.transferFee && dto.transferFee > 0) {
-          await this.repo.create({ ...eb, date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية' });
+        if (hasFee) {
+          await this.repo.create({ ...eb, date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية', groupId: collectGroupId });
         }
         return collection;
       }
@@ -59,17 +62,20 @@ export class TransactionsService {
 
       case EntryType.EXPENSE: {
         this.requirePart(dto.treasuryId, 'الخزينة');
+        const expenseGroupId = dto.partyId ? crypto.randomUUID() : undefined;
         const expTx = await this.repo.create({
           ...eb, date, type: 'مصروف',
           category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
           treasury: { connect: { uid: dto.treasuryId } },
           cashOut: amt, note: dto.note,
+          ...(expenseGroupId ? { groupId: expenseGroupId } : {}),
         });
         if (dto.partyId) {
           await this.repo.create({
             ...eb, date, type: 'مصروف على عميل',
             party: { connect: { uid: dto.partyId } },
             debit: amt, note: dto.note,
+            groupId: expenseGroupId,
           });
         }
         return expTx;
@@ -117,9 +123,10 @@ export class TransactionsService {
           this.repo.findPartyByUid(dto.partyId!),
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
+        const transferGroupId = crypto.randomUUID();
         await this.repo.createMany([
-          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}` },
-          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}` },
+          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: from.id, credit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId },
+          { ...ebFlat, date, type: 'تحويل بين أطراف', partyId: to.id, debit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId },
         ]);
         return { ok: true };
       }
@@ -145,12 +152,14 @@ export class TransactionsService {
     const txn = await this.repo.findByUid(id);
     if (!txn.pending) throw new BadRequestException('هذه الحركة ليست معلّقة');
     const fee = dto.transferFee != null ? dto.transferFee : (Number(txn.expAmt) || 0);
-    const updated = await this.repo.updatePending(id, dto.partyId, Number(txn.cashIn));
+    const resolveGroupId = fee > 0 ? crypto.randomUUID() : undefined;
+    const updated = await this.repo.updatePending(id, dto.partyId, Number(txn.cashIn), resolveGroupId);
     if (fee > 0) {
       await this.repo.create({
         date: txn.date, type: 'رسوم نقل',
         party: { connect: { uid: dto.partyId } },
         debit: fee, note: 'رسوم نقل النقدية',
+        groupId: resolveGroupId,
       });
     }
     return updated;

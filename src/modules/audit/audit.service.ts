@@ -157,8 +157,10 @@ export class AuditService {
   }
 
   private restoreTransaction(snap: any) {
-    const { id: _id, createdAt: _c, invoice: _inv, deal: _deal, party: _p, treasury: _t, treasury2: _t2, category: _cat, ...t } = snap;
-    return this.prisma.transaction.create({ data: { ...t, date: new Date(t.date) } });
+    // Older audit rows (captured before group-aware snapshots) stored a single
+    // flat transaction object rather than an array — support both.
+    const rows: any[] = Array.isArray(snap) ? snap : [snap];
+    return this.prisma.transaction.createMany({ data: rows.map((t) => this.txnData(t)) });
   }
 
   private restoreManifest(snap: any) {

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
+import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 import { UpdateTransactionDto } from './dto/transactions.dto';
 
 const TXN_INCLUDE = { party: true, treasury: true, treasury2: true, category: true, invoice: { select: { uid: true } }, deal: { select: { uid: true } } } as const;
@@ -57,7 +58,7 @@ export class TransactionsRepository {
     return this.prisma.transaction.findUniqueOrThrow({ where: { uid } });
   }
 
-  updatePending(uid: string, partyUid: string, cashIn: number) {
+  updatePending(uid: string, partyUid: string, cashIn: number, groupId?: string) {
     return this.prisma.transaction.update({
       where: { uid },
       data: {
@@ -66,6 +67,7 @@ export class TransactionsRepository {
         type: 'تحصيل',
         pending: false,
         expAmt: 0,
+        ...(groupId ? { groupId } : {}),
       },
     });
   }
@@ -125,7 +127,9 @@ export class TransactionsRepository {
     return updated;
   }
 
-  remove(id: string) {
-    return this.prisma.transaction.delete({ where: { uid: id } });
+  async remove(id: string) {
+    const txn = await this.prisma.transaction.findUniqueOrThrow({ where: { uid: id } });
+    await deleteTransactionAndEffects(this.prisma, txn.id);
+    return txn;
   }
 }

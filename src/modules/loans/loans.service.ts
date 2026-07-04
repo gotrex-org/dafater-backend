@@ -1,10 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 import { CreateLoanDto, ReturnLoanDto } from './dto/loans.dto';
 import { LoansRepository } from './loans.repository';
 
 @Injectable()
 export class LoansService {
-  constructor(private repo: LoansRepository) {}
+  constructor(
+    private repo: LoansRepository,
+    private prisma: PrismaService,
+  ) {}
 
   async create(dto: CreateLoanDto) {
     const product = await this.repo.findProductByUid(dto.productId);
@@ -123,6 +128,10 @@ export class LoansService {
     const loan = await this.repo.findByUid(uid);
     if (!loan) throw new NotFoundException('العارية غير موجودة');
     if (loan.status !== 'OPEN') throw new BadRequestException('لا يمكن حذف عارية تم استردادها');
+    // clean up any cash/debt return transactions before the DB cascades away their LoanReturn rows
+    for (const ret of (loan as any).returns ?? []) {
+      if (ret.txId) await deleteTransactionAndEffects(this.prisma, ret.txId);
+    }
     return this.repo.remove(uid);
   }
 }

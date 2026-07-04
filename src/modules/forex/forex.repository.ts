@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto } from './dto/forex.dto';
 
 @Injectable()
@@ -51,18 +52,7 @@ export class ForexRepository {
 
   async egpIn(agent: { id: number; name: string }, treasuryId: number | undefined, dto: EgpInDto) {
     return this.prisma.$transaction(async (tx) => {
-      const agentTx = await tx.dollarAgentTx.create({
-        data: {
-          date: new Date(dto.date),
-          type: 'EGP_IN',
-          egpAmount: dto.egpAmount,
-          note: dto.note,
-          agentId: agent.id,
-          treasuryId,
-        },
-        include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
-      });
-      await tx.transaction.create({
+      const createdTx = await tx.transaction.create({
         data: {
           date: new Date(dto.date),
           type: 'دفع لوكيل صرف',
@@ -71,25 +61,24 @@ export class ForexRepository {
           note: dto.note ?? `دفع لـ ${agent.name}`,
         },
       });
-      return agentTx;
+      return tx.dollarAgentTx.create({
+        data: {
+          date: new Date(dto.date),
+          type: 'EGP_IN',
+          egpAmount: dto.egpAmount,
+          note: dto.note,
+          agentId: agent.id,
+          treasuryId,
+          txId: createdTx.id,
+        },
+        include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
+      });
     });
   }
 
   async usdOut(agent: { id: number }, party: { id: number; name: string }, dto: UsdOutDto) {
     return this.prisma.$transaction(async (tx) => {
-      const agentTx = await tx.dollarAgentTx.create({
-        data: {
-          date: new Date(dto.date),
-          type: 'USD_OUT',
-          usdAmount: dto.usdAmount,
-          exchangeRate: dto.exchangeRate,
-          note: dto.note,
-          agentId: agent.id,
-          partyId: party.id,
-        },
-        include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
-      });
-      await tx.transaction.create({
+      const createdTx = await tx.transaction.create({
         data: {
           date: new Date(dto.date),
           type: 'دفع دولار لمورد',
@@ -99,7 +88,19 @@ export class ForexRepository {
           note: dto.note ?? `توريد ${dto.usdAmount} دولار — سعر ${dto.exchangeRate}`,
         },
       });
-      return agentTx;
+      return tx.dollarAgentTx.create({
+        data: {
+          date: new Date(dto.date),
+          type: 'USD_OUT',
+          usdAmount: dto.usdAmount,
+          exchangeRate: dto.exchangeRate,
+          note: dto.note,
+          agentId: agent.id,
+          partyId: party.id,
+          txId: createdTx.id,
+        },
+        include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
+      });
     });
   }
 
@@ -108,7 +109,17 @@ export class ForexRepository {
     // direction 'out' = we pay them       → store negative egpAmount, treasury cashOut
     const signed = dto.direction === 'in' ? dto.egpAmount : -dto.egpAmount;
     return this.prisma.$transaction(async (tx) => {
-      const agentTx = await tx.dollarAgentTx.create({
+      const createdTx = treasuryId ? await tx.transaction.create({
+        data: {
+          date: new Date(dto.date),
+          type: 'تسوية وكيل صرف',
+          treasuryId,
+          cashIn: dto.direction === 'in' ? dto.egpAmount : 0,
+          cashOut: dto.direction === 'out' ? dto.egpAmount : 0,
+          note: dto.note ?? `تسوية ${agent.name}`,
+        },
+      }) : null;
+      return tx.dollarAgentTx.create({
         data: {
           date: new Date(dto.date),
           type: 'SETTLE',
@@ -116,22 +127,10 @@ export class ForexRepository {
           note: dto.note,
           agentId: agent.id,
           treasuryId,
+          txId: createdTx?.id ?? null,
         },
         include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
       });
-      if (treasuryId) {
-        await tx.transaction.create({
-          data: {
-            date: new Date(dto.date),
-            type: 'تسوية وكيل صرف',
-            treasuryId,
-            cashIn: dto.direction === 'in' ? dto.egpAmount : 0,
-            cashOut: dto.direction === 'out' ? dto.egpAmount : 0,
-            note: dto.note ?? `تسوية ${agent.name}`,
-          },
-        });
-      }
-      return agentTx;
     });
   }
 
@@ -139,7 +138,13 @@ export class ForexRepository {
     return this.prisma.dollarAgentTx.findUnique({ where: { uid } });
   }
 
-  deleteAgentTx(id: number) {
-    return this.prisma.dollarAgentTx.delete({ where: { id } });
+  async deleteAgentTx(id: number) {
+    const agentTx = await this.prisma.dollarAgentTx.findUniqueOrThrow({ where: { id } });
+    if (agentTx.txId) {
+      // cascades to the paired Transaction, which in turn deletes this agent tx
+      await deleteTransactionAndEffects(this.prisma, agentTx.txId);
+    } else {
+      await this.prisma.dollarAgentTx.delete({ where: { id } });
+    }
   }
 }

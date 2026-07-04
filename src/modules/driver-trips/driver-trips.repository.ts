@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 
 const include = {
   manifest: { select: { uid: true, no: true } },
@@ -39,6 +40,19 @@ export class DriverTripsRepository {
     return this.prisma.transaction.create({ data });
   }
 
+  // Creates a DriverPayment and (if a treasury tx is given) its paired treasury
+  // Transaction atomically, linking them via DriverPayment.txId so deleting
+  // either one cascades to the other — see transaction-cascade.ts.
+  createPaymentWithTreasuryTx(
+    payment: { tripId: number; date: Date; amount: number; paymentType: string; note: string | null },
+    treasuryTx?: { date: Date; type: string; cashOut: number; treasuryId: number; note: string },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const createdTx = treasuryTx ? await tx.transaction.create({ data: treasuryTx }) : null;
+      return tx.driverPayment.create({ data: { ...payment, txId: createdTx?.id ?? null } });
+    });
+  }
+
   findAll() {
     return this.prisma.driverTrip.findMany({ include, orderBy: { createdAt: 'desc' } });
   }
@@ -55,8 +69,14 @@ export class DriverTripsRepository {
     return this.prisma.driverPayment.findUnique({ where: { uid } });
   }
 
-  deletePayment(uid: string) {
-    return this.prisma.driverPayment.delete({ where: { uid } });
+  async deletePayment(uid: string) {
+    const payment = await this.prisma.driverPayment.findUniqueOrThrow({ where: { uid } });
+    if (payment.txId) {
+      // cascades to the paired treasury Transaction, which in turn deletes this payment
+      await deleteTransactionAndEffects(this.prisma, payment.txId);
+    } else {
+      await this.prisma.driverPayment.delete({ where: { uid } });
+    }
   }
 
   createDelayTx(data: { date: Date; type: string; debit: number; partyId: number; note: string }) {

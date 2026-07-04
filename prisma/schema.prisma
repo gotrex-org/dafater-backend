@@ -223,11 +223,18 @@ model Transaction {
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
 
+  // Ties together sibling rows created by ONE user action (e.g. a collection +
+  // its transfer fee, a party-transfer's two legs) so deleting one deletes all.
+  // No formal FK — same "raw pointer" convention as LoanReturn.txId /
+  // DriverTrip.delayTxId below; see backend/src/common/transaction-cascade.ts.
+  groupId String?
+
   createdAt DateTime @default(now())
 
   @@index([partyId])
   @@index([treasuryId])
   @@index([date])
+  @@index([groupId])
 }
 
 // ----------------------------- invoices -----------------------------
@@ -465,6 +472,9 @@ model DriverPayment {
   amount      Float
   paymentType String   @default("freight")  // freight | delay
   note        String?
+  // id of the paired treasury Transaction created alongside this payment, if any
+  // (raw pointer, same convention as LoanReturn.txId) — see transaction-cascade.ts.
+  txId        Int?
   createdAt   DateTime @default(now())
 
   @@index([tripId])
@@ -607,6 +617,10 @@ model DollarAgentTx {
   partyId      Int?
 
   note String?
+
+  // id of the paired Transaction created alongside this agent tx, if any
+  // (raw pointer, same convention as LoanReturn.txId) — see transaction-cascade.ts.
+  txId Int?
 
   createdAt DateTime @default(now())
 

@@ -28,7 +28,14 @@ const DELETE_FETCH: Record<
   string,
   (p: PrismaService, uid: string) => Promise<any>
 > = {
-  transactions:         (p, uid) => p.transaction.findUnique({ where: { uid } }),
+  // Deleting one transaction can cascade to its whole group (see
+  // transaction-cascade.ts) — snapshot every sibling sharing the groupId, not
+  // just the one at the URL, so undo restores the whole group.
+  transactions:         async (p, uid) => {
+    const txn = await p.transaction.findUnique({ where: { uid } });
+    if (!txn) return null;
+    return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId } }) : [txn];
+  },
   invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
   deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
   manifests:            (p, uid) => p.manifest.findUnique({ where: { uid }, include: { items: true } }),

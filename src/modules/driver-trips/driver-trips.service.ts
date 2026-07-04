@@ -49,47 +49,43 @@ export class DriverTripsService {
     if (dto.initialPaid && dto.initialPaid > 0) {
       if (dto.initialPaid > dto.agreedFreight + 0.001)
         throw new BadRequestException(`الدفعة المقدمة (${dto.initialPaid}) أكبر من الناولون المتفق عليه (${dto.agreedFreight})`);
-      await this.repo.createPayment({
-        tripId: trip.id,
-        date: new Date(dto.departureDate),
-        amount: dto.initialPaid,
-        paymentType: 'freight',
-        note: dto.initialPaidNote?.trim() || 'دفعة أولى',
-      });
-      if (dto.initialPaidTreasuryId) {
-        const treasury = await this.repo.findTreasuryByUid(dto.initialPaidTreasuryId);
-        if (treasury) {
-          await this.repo.createTreasuryTx({
-            date: new Date(dto.departureDate),
-            type: 'driverFreight',
-            cashOut: dto.initialPaid,
-            treasuryId: treasury.id,
-            note: `دفعة أولى ناولون (${dto.driverName.trim()})`,
-          });
-        }
-      }
+      const treasury = dto.initialPaidTreasuryId ? await this.repo.findTreasuryByUid(dto.initialPaidTreasuryId) : null;
+      await this.repo.createPaymentWithTreasuryTx(
+        {
+          tripId: trip.id,
+          date: new Date(dto.departureDate),
+          amount: dto.initialPaid,
+          paymentType: 'freight',
+          note: dto.initialPaidNote?.trim() || 'دفعة أولى',
+        },
+        treasury ? {
+          date: new Date(dto.departureDate),
+          type: 'driverFreight',
+          cashOut: dto.initialPaid,
+          treasuryId: treasury.id,
+          note: `دفعة أولى ناولون (${dto.driverName.trim()})`,
+        } : undefined,
+      );
     }
 
     if (dto.teaMoney && dto.teaMoney > 0) {
-      await this.repo.createPayment({
-        tripId: trip.id,
-        date: new Date(dto.departureDate),
-        amount: dto.teaMoney,
-        paymentType: 'tea',
-        note: 'شاي سائق',
-      });
-      if (dto.teaTreasuryId) {
-        const treasury = await this.repo.findTreasuryByUid(dto.teaTreasuryId);
-        if (treasury) {
-          await this.repo.createTreasuryTx({
-            date: new Date(dto.departureDate),
-            type: 'driverTea',
-            cashOut: dto.teaMoney,
-            treasuryId: treasury.id,
-            note: `شاي سائق (${dto.driverName.trim()})`,
-          });
-        }
-      }
+      const treasury = dto.teaTreasuryId ? await this.repo.findTreasuryByUid(dto.teaTreasuryId) : null;
+      await this.repo.createPaymentWithTreasuryTx(
+        {
+          tripId: trip.id,
+          date: new Date(dto.departureDate),
+          amount: dto.teaMoney,
+          paymentType: 'tea',
+          note: 'شاي سائق',
+        },
+        treasury ? {
+          date: new Date(dto.departureDate),
+          type: 'driverTea',
+          cashOut: dto.teaMoney,
+          treasuryId: treasury.id,
+          note: `شاي سائق (${dto.driverName.trim()})`,
+        } : undefined,
+      );
     }
 
     return this.findOne(trip.uid);
@@ -177,25 +173,19 @@ export class DriverTripsService {
       treasury = await this.repo.findTreasuryByUid(dto.treasuryId) as any;
     }
 
-    await this.repo.createPayment({
-      tripId: trip.id,
-      date: new Date(dto.date),
-      amount: dto.amount,
-      paymentType,
-      note: dto.note?.trim() || null,
-    });
-    if (treasury) {
-      const txType = paymentType === 'delay' ? 'driverDelay' : paymentType === 'weightDiff' ? 'driverWeightDiff' : 'driverFreight';
-      const txNote = dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : paymentType === 'weightDiff' ? `دفع فرق وزن (${trip.driverName})` : `دفع ناولون (${trip.driverName})`);
-      await this.repo.createTreasuryTx({ date: new Date(dto.date), type: txType, cashOut: dto.amount, treasuryId: treasury.id, note: txNote });
-    }
+    const txType = paymentType === 'delay' ? 'driverDelay' : paymentType === 'weightDiff' ? 'driverWeightDiff' : 'driverFreight';
+    const txNote = dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : paymentType === 'weightDiff' ? `دفع فرق وزن (${trip.driverName})` : `دفع ناولون (${trip.driverName})`);
+    await this.repo.createPaymentWithTreasuryTx(
+      { tripId: trip.id, date: new Date(dto.date), amount: dto.amount, paymentType, note: dto.note?.trim() || null },
+      treasury ? { date: new Date(dto.date), type: txType, cashOut: dto.amount, treasuryId: treasury.id, note: txNote } : undefined,
+    );
 
     // Legacy: when paying delay and a weightDiffAmount is bundled, create the weight-diff payment too
     if (paymentType === 'delay' && dto.weightDiffAmount && dto.weightDiffAmount > 0) {
-      await this.repo.createPayment({ tripId: trip.id, date: new Date(dto.date), amount: dto.weightDiffAmount, paymentType: 'weightDiff', note: 'فرق وزن' });
-      if (treasury) {
-        await this.repo.createTreasuryTx({ date: new Date(dto.date), type: 'driverWeightDiff', cashOut: dto.weightDiffAmount, treasuryId: treasury.id, note: `فرق وزن (${trip.driverName})` });
-      }
+      await this.repo.createPaymentWithTreasuryTx(
+        { tripId: trip.id, date: new Date(dto.date), amount: dto.weightDiffAmount, paymentType: 'weightDiff', note: 'فرق وزن' },
+        treasury ? { date: new Date(dto.date), type: 'driverWeightDiff', cashOut: dto.weightDiffAmount, treasuryId: treasury.id, note: `فرق وزن (${trip.driverName})` } : undefined,
+      );
     }
 
     return this.findOne(uid);
