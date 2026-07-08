@@ -45,7 +45,9 @@ services:
     build:
       context: ../dafater-frontend
       args:
-        NEXT_PUBLIC_API_URL: "https://abo-shama.com"
+        # Empty = same-origin/relative API calls (see frontend/src/lib/api.ts) — works
+        # whether reached via the domain or the bare server IP fallback.
+        NEXT_PUBLIC_API_URL: ""
     expose:
       - "3000"
     depends_on:

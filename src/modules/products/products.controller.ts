@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { InvoiceKind } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
@@ -23,6 +24,13 @@ export class ProductsController {
   @Permissions()
   catalog() {
     return this.service.catalog();
+  }
+
+  // Must come before ':id' — otherwise "last-prices" is matched as an :id param.
+  @Get('last-prices')
+  @Permissions()
+  lastPrices(@Query('kind') kind: InvoiceKind) {
+    return this.service.lastPrices(kind);
   }
 
   @Get()
@@ -54,7 +62,7 @@ export class ProductsController {
 
   @Delete(':id')
   @Permissions('settings')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@Param('id') id: string, @Query('cascade') cascade?: string) {
+    return this.service.remove(id, cascade === 'true');
   }
 }

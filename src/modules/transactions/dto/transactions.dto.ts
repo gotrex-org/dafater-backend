@@ -30,7 +30,7 @@ export class PostEntryDto {
   @IsOptional() @IsNumber() rate?: number; // exchange rate (EGP per USD)
   @IsOptional() @IsNumber() amount2?: number; // received amount on currency transfer
   @IsOptional() @IsString() direction?: 'debit' | 'credit'; // for adjust
-  @IsOptional() @IsNumber() transferFee?: number; // رسوم نقل النقدية — تُسجّل على العميل (مدين)
+  @IsOptional() @IsNumber() transferFee?: number; // رسوم نقل النقدية — تُسجّل على العميل (عليه)
   @IsOptional() @IsString() note?: string;
 }
 

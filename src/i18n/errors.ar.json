@@ -28,6 +28,7 @@
   "Driver not found": "السائق غير موجود",
   "No party linked to this account": "لا يوجد طرف مرتبط بهذا الحساب",
   "Related record not found": "أحد العناصر المرتبطة (مثل الخزنة أو الطرف) غير موجود",
+  "Cannot delete: in use": "لا يمكن الحذف — هذا العنصر مستخدم في سجلات أخرى",
 
   "Unauthorized": "يجب تسجيل الدخول أولاً",
   "Forbidden": "ليس لديك صلاحية",

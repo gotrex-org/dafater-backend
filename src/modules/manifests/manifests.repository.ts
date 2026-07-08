@@ -22,7 +22,7 @@ export class ManifestsRepository {
     };
     return paginate(this.prisma.manifest, q, {
       where,
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
       include: { items: true, driverTrips: { select: { arrivalDate: true } } },
     });
   }
@@ -45,7 +45,7 @@ export class ManifestsRepository {
         ],
       },
       include: { items: true, driverTrips: { select: { arrivalDate: true } } },
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 

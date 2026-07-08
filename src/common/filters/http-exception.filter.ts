@@ -53,12 +53,30 @@ const MODEL_NOT_FOUND_KEY: Record<string, string> = {
   Transaction: 'Transaction not found',
 };
 
-// P2025/P2003's `meta.cause` embeds the actual missing model, e.g.
+// P2025's `meta.cause` embeds the actual missing model, e.g.
 // "No 'TreasuryAccount' record(s) ... was found for a nested connect on ...".
 function missingModelKey(exception: Prisma.PrismaClientKnownRequestError): string | undefined {
   const cause = (exception.meta as { cause?: string } | undefined)?.cause;
   const modelName = cause?.match(/'(\w+)' record/)?.[1];
   return modelName ? MODEL_NOT_FOUND_KEY[modelName] : undefined;
+}
+
+// The model (table) whose row(s) are still pointing at the record a DELETE is trying to
+// remove, e.g. Product deleted while InvoiceItem rows still reference it (onDelete: Restrict).
+// Postgres FK constraint names look like "<ReferencingModel>_<column>_fkey (index)".
+const IN_USE_BY_LABEL: Record<string, { ar: string; en: string }> = {
+  Invoice: { ar: 'فواتير', en: 'invoices' },
+  InvoiceItem: { ar: 'فواتير', en: 'invoices' },
+  Deal: { ar: 'صفقات', en: 'deals' },
+  DealItem: { ar: 'صفقات', en: 'deals' },
+  Loan: { ar: 'عاريات', en: 'loans' },
+};
+
+function inUseByLabel(exception: Prisma.PrismaClientKnownRequestError, lang: string): string | undefined {
+  const fieldName = (exception.meta as { field_name?: string } | undefined)?.field_name;
+  const referencingModel = fieldName?.match(/^(\w+?)_/)?.[1];
+  const entry = referencingModel ? IN_USE_BY_LABEL[referencingModel] : undefined;
+  return entry?.[lang as 'ar' | 'en'] ?? entry?.ar;
 }
 
 @Catch()
@@ -74,6 +92,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const map = MESSAGES[lang] ?? MESSAGES['ar'];
 
     if (exception instanceof Prisma.PrismaClientKnownRequestError) {
+      // A DELETE hitting P2003 can only mean one thing: other rows still reference this
+      // record (onDelete: Restrict) — the opposite situation from "record not found", so
+      // it gets its own message naming what's actually blocking the delete.
+      if (exception.code === 'P2003' && req.method === 'DELETE') {
+        this.logger.warn(
+          `${req.method} ${req.originalUrl} -> P2003 (in use): ${exception.message} | meta=${JSON.stringify(exception.meta)}`,
+        );
+        const label = inUseByLabel(exception, lang);
+        const message = label
+          ? (lang === 'en' ? `Cannot delete — this item is still used in existing ${label}` : `لا يمكن الحذف — هذا العنصر مستخدم في ${label} سابقة`)
+          : translate(map, 'Cannot delete: in use', HttpStatus.BAD_REQUEST);
+        res.status(HttpStatus.BAD_REQUEST).json({ statusCode: HttpStatus.BAD_REQUEST, message });
+        return;
+      }
+
       // A referenced record (e.g. treasury/party uid sent from the client) does not exist.
       if (exception.code === 'P2025' || exception.code === 'P2003') {
         this.logger.warn(

@@ -28,14 +28,14 @@ export class TransactionsController {
 
   @Patch(':id/resolve')
   @Permissions('entry')
-  resolve(@Param('id') id: string, @Body() dto: ResolveDto) {
-    return this.service.resolve(id, dto);
+  resolve(@Param('id') id: string, @Body() dto: ResolveDto, @CurrentUser() user: any) {
+    return this.service.resolve(id, dto, user);
   }
 
   @Patch(':id')
   @Permissions('entry')
-  update(@Param('id') id: string, @Body() dto: UpdateTransactionDto) {
-    return this.service.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateTransactionDto, @CurrentUser() user: any) {
+    return this.service.update(id, dto, user);
   }
 
   @Delete(':id')

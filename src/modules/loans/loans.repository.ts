@@ -33,7 +33,7 @@ export class LoansRepository {
   }
 
   findAll(where: any) {
-    return this.prisma.loan.findMany({ where, include, orderBy: { date: 'desc' } });
+    return this.prisma.loan.findMany({ where, include, orderBy: [{ date: 'desc' }, { createdAt: 'desc' }] });
   }
 
   findByUid(uid: string) {

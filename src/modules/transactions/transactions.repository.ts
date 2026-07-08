@@ -31,7 +31,7 @@ export class TransactionsRepository {
   }
 
   create(data: any) {
-    return this.prisma.transaction.create({ data });
+    return this.prisma.transaction.create({ data, include: TXN_INCLUDE });
   }
 
   createMany(data: any[]) {
@@ -55,7 +55,7 @@ export class TransactionsRepository {
   }
 
   findByUid(uid: string) {
-    return this.prisma.transaction.findUniqueOrThrow({ where: { uid } });
+    return this.prisma.transaction.findUniqueOrThrow({ where: { uid }, include: TXN_INCLUDE });
   }
 
   updatePending(uid: string, partyUid: string, cashIn: number, groupId?: string) {
@@ -69,6 +69,7 @@ export class TransactionsRepository {
         expAmt: 0,
         ...(groupId ? { groupId } : {}),
       },
+      include: TXN_INCLUDE,
     });
   }
 

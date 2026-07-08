@@ -102,6 +102,10 @@ model Party {
   opening  Float      @default(0) // opening balance (+ = owes us)
   hidden   Boolean    @default(false)
 
+  // Marks the single system placeholder party used for "بيع مباشر" (direct sale,
+  // no customer picked) — see PartiesService.getOrCreateDirectSaleParty().
+  isDirectSale Boolean @default(false)
+
   // self-relation: link a client to a supplier so they share one ledger
   linkedPartyId Int?    @unique
   linkedParty   Party?  @relation("PartyLink", fields: [linkedPartyId], references: [id], onDelete: SetNull)
@@ -160,6 +164,16 @@ model Product {
   name String
   unit String?
   service Boolean @default(false) // a charge/service line (نولون، تخليص…) — excluded from stock
+
+  // Manually-set valuation price — when > 0, used as the warehouse-stock unit cost
+  // instead of the computed weighted-average purchase price (see BalancesRepository).
+  price Float @default(0)
+
+  // Auto-appear as a blank line on every new invoice of that kind (independent of
+  // `service` — a pinned line is usually also a service line, but the two are separate
+  // switches: `service` controls stock exclusion, these control which invoices it shows on).
+  pinSale     Boolean @default(false)
+  pinPurchase Boolean @default(false)
 
   invoiceItems InvoiceItem[]
   dealItems    DealItem[]

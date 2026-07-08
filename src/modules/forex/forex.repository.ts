@@ -22,7 +22,7 @@ export class ForexRepository {
         treasury: { select: { uid: true, name: true } },
         party: { select: { uid: true, name: true } },
       },
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 

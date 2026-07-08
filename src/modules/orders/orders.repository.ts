@@ -22,7 +22,7 @@ export class OrdersRepository {
     };
     return paginate(this.prisma.order, q, {
       where,
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
       include: { items: true, party: { select: { uid: true, name: true } } },
     });
   }
@@ -79,7 +79,7 @@ export class OrdersRepository {
     return paginate(this.prisma.order, q, {
       where: { partyId: partyIntId },
       include: { items: true },
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 

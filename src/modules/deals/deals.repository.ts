@@ -22,7 +22,7 @@ export class DealsRepository {
       gte: q.from ? new Date(q.from) : undefined,
       lt: q.to ? new Date(new Date(q.to).getTime() + 86400000) : undefined,
     };
-    return paginate(this.prisma.deal, q, { where, orderBy: [{ date: 'desc' }], include: DEAL_INCLUDE });
+    return paginate(this.prisma.deal, q, { where, orderBy: [{ date: 'desc' }, { createdAt: 'desc' }], include: DEAL_INCLUDE });
   }
 
   findOne(uid: string) {

@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { InvoiceKind } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsRepository } from './products.repository';
@@ -10,6 +11,7 @@ export class ProductsService {
   catalog() { return this.repo.catalog(); }
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
   findOne(id: string) { return this.repo.findOne(id); }
+  lastPrices(kind: InvoiceKind) { return this.repo.lastPrices(kind); }
 
   async movements(uid: string) {
     const result = await this.repo.movements(uid);
@@ -31,5 +33,25 @@ export class ProductsService {
 
   create(dto: CreateProductDto) { return this.repo.create(dto); }
   update(id: string, dto: UpdateProductDto) { return this.repo.update(id, dto); }
-  remove(id: string) { return this.repo.remove(id); }
+
+  async remove(id: string, cascade: boolean) {
+    const prod = await this.repo.findByUid(id);
+    if (!prod) throw new NotFoundException('Product not found');
+
+    const hardBlockers = await this.repo.countHardBlockers(prod.id);
+    if (hardBlockers > 0) {
+      throw new ConflictException(
+        `هذا الصنف مُستخدم في ${hardBlockers} بند فاتورة/صفقة فعلية — لا يمكن حذفه لأن ذلك يعني حذف فواتير أخرى`,
+      );
+    }
+
+    if (!cascade) {
+      const related = await this.repo.countCascadeEligible(prod.id);
+      if (related > 0) {
+        throw new ConflictException(`يوجد ${related} تسوية مخزن/عارية مرتبطة بهذا الصنف — احذفها أولاً أو أكّد حذفها معه`);
+      }
+    }
+
+    return this.repo.removeCascade(prod.id);
+  }
 }

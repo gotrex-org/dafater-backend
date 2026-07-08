@@ -14,7 +14,7 @@ export class RequestsRepository {
     if (clientId) where.client = { uid: clientId };
     return paginate(this.prisma.request, q, {
       where,
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
       include: { client: true, items: true },
     });
   }

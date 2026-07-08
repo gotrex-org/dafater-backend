@@ -14,13 +14,37 @@ const BEFORE_FETCH: Record<
   string,
   (p: PrismaService, uid: string) => Promise<Record<string, any> | null>
 > = {
-  invoices:      (p, uid) => p.invoice.findUnique({ where: { uid }, select: { date: true, paid: true, note: true } }),
+  invoices: (p, uid) => p.invoice.findUnique({
+    where: { uid },
+    select: {
+      date: true, paid: true, note: true,
+      party: { select: { name: true } },
+      warehouse: { select: { name: true } },
+      items: { select: { productId: true, qty: true, price: true, product: { select: { name: true } } } },
+    },
+  }),
   parties:       (p, uid) => p.party.findUnique({ where: { uid }, select: { name: true, phone: true } }),
   manifests:     (p, uid) => p.manifest.findUnique({ where: { uid }, select: { clientName: true, driverName: true, vehicleNo: true, trailerNo: true, note: true } }),
-  deals:         (p, uid) => p.deal.findUnique({ where: { uid }, select: { date: true, note: true } }),
+  deals: (p, uid) => p.deal.findUnique({
+    where: { uid },
+    select: {
+      date: true, note: true,
+      client: { select: { name: true } },
+      supplier: { select: { name: true } },
+      items: { select: { productId: true, qty: true, price: true, product: { select: { name: true } } } },
+    },
+  }),
   products:      (p, uid) => p.product.findUnique({ where: { uid }, select: { name: true, unit: true } }),
   'driver-trips':(p, uid) => p.driverTrip.findUnique({ where: { uid }, select: { driverName: true, agreedFreight: true, note: true } }),
   requests:      (p, uid) => p.request.findUnique({ where: { uid }, select: { done: true, note: true } }),
+  treasury:      (p, uid) => p.treasuryAccount.findUnique({ where: { uid }, select: { name: true, opening: true, currency: true } }),
+  warehouses:    (p, uid) => p.warehouse.findUnique({ where: { uid }, select: { name: true } }),
+  'expense-categories': (p, uid) => p.expenseCategory.findUnique({ where: { uid }, select: { name: true } }),
+  drivers:       (p, uid) => p.driver.findUnique({ where: { uid }, select: { name: true, phone: true, phone2: true, vehicleNo: true, trailerNo: true, note: true } }),
+  // Never select pinHash — audit snapshots must not carry credential material.
+  users:         (p, uid) => p.user.findUnique({ where: { uid }, select: { name: true, admin: true, views: true, role: true } }),
+  loans:         (p, uid) => p.loan.findUnique({ where: { uid }, select: { status: true, returnedQty: true, cashReturnedQty: true, note: true } }),
+  orders:        (p, uid) => p.order.findUnique({ where: { uid }, select: { name: true, phone: true, note: true, status: true } }),
 };
 
 // Full entity snapshot BEFORE a DELETE — used for undo/restore
@@ -32,9 +56,10 @@ const DELETE_FETCH: Record<
   // transaction-cascade.ts) — snapshot every sibling sharing the groupId, not
   // just the one at the URL, so undo restores the whole group.
   transactions:         async (p, uid) => {
-    const txn = await p.transaction.findUnique({ where: { uid } });
+    const include = { party: true, treasury: true, treasury2: true, category: true } as const;
+    const txn = await p.transaction.findUnique({ where: { uid }, include });
     if (!txn) return null;
-    return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId } }) : [txn];
+    return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId }, include }) : [txn];
   },
   invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
   deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
@@ -84,6 +109,84 @@ function computeDiff(
   return Object.keys(changes).length ? changes : undefined;
 }
 
+// Invoice/deal line items are fully replaced on every update (deleteMany + create),
+// so item rows get a new uid each time — match before/after by productId instead.
+function computeItemsDiff(
+  beforeItems: any[] = [],
+  afterItems: any[] = [],
+): Record<string, { from: any; to: any }> {
+  const changes: Record<string, { from: any; to: any }> = {};
+  const keyOf = (it: any) => (it.productId != null ? `p${it.productId}` : (it.product?.name ?? 'صنف'));
+  const nameOf = (it: any) => it.product?.name ?? 'صنف';
+
+  const beforeMap = new Map(beforeItems.map((it) => [keyOf(it), it]));
+  const afterMap   = new Map(afterItems.map((it) => [keyOf(it), it]));
+
+  for (const [key, b] of beforeMap) {
+    const name = nameOf(b);
+    const a = afterMap.get(key);
+    if (!a) {
+      changes[`صنف محذوف — ${name}`] = { from: `${b.qty} × ${b.price}`, to: null };
+      continue;
+    }
+    if (a.price !== b.price) changes[`السعر — ${name}`] = { from: b.price, to: a.price };
+    if (a.qty !== b.qty) changes[`الكمية — ${name}`] = { from: b.qty, to: a.qty };
+  }
+  for (const [key, a] of afterMap) {
+    if (!beforeMap.has(key)) {
+      changes[`صنف مضاف — ${nameOf(a)}`] = { from: null, to: `${a.qty} × ${a.price}` };
+    }
+  }
+  return changes;
+}
+
+// Invoices/deals need item-level diffing on top of the generic scalar diff —
+// handled separately from computeDiff() rather than folded into it.
+function computeInvoiceLikeDiff(
+  entity: 'invoices' | 'deals',
+  before: Record<string, any>,
+  after: Record<string, any>,
+): Record<string, { from: any; to: any }> | undefined {
+  const scalarKeys = entity === 'invoices' ? ['date', 'paid', 'note'] : ['date', 'note'];
+  const scalarBefore: Record<string, any> = {};
+  const scalarAfter: Record<string, any> = {};
+  for (const k of scalarKeys) { scalarBefore[k] = before[k]; scalarAfter[k] = after[k]; }
+
+  const changes: Record<string, { from: any; to: any }> = { ...(computeDiff(scalarBefore, scalarAfter) ?? {}) };
+
+  if (entity === 'invoices') {
+    const fromName = before.party?.name ?? null;
+    const toName   = after.party?.name ?? null;
+    if (fromName !== toName) changes['العميل/المورد'] = { from: fromName, to: toName };
+    const fromWh = before.warehouse?.name ?? null;
+    const toWh   = after.warehouse?.name ?? null;
+    if (fromWh !== toWh) changes['المخزن'] = { from: fromWh, to: toWh };
+  } else {
+    const fromClient = before.client?.name ?? null;
+    const toClient   = after.client?.name ?? null;
+    if (fromClient !== toClient) changes['العميل'] = { from: fromClient, to: toClient };
+    const fromSupplier = before.supplier?.name ?? null;
+    const toSupplier   = after.supplier?.name ?? null;
+    if (fromSupplier !== toSupplier) changes['المورد'] = { from: fromSupplier, to: toSupplier };
+  }
+
+  Object.assign(changes, computeItemsDiff(before.items, after.items));
+
+  return Object.keys(changes).length ? changes : undefined;
+}
+
+// Human summary for a deleted transaction (or its whole group), built from the
+// enriched DELETE_FETCH snapshot — falls back gracefully if a leg has no party/treasury.
+function describeTxnDelete(snapshot: any): string | null {
+  const rows: any[] = Array.isArray(snapshot) ? snapshot : [snapshot];
+  const first = rows[0];
+  if (!first) return null;
+  const amt = first.debit || first.credit || first.cashIn || first.cashOut || first.cashIn2 || first.cashOut2 || 0;
+  const who = first.party?.name ? ` — ${first.party.name}` : '';
+  const where = first.treasury?.name ? ` (${first.treasury.name})` : '';
+  return `${first.type} ${amt}${who}${where}`;
+}
+
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
   constructor(private prisma: PrismaService) {}
@@ -98,6 +201,11 @@ export class AuditInterceptor implements NestInterceptor {
     const entity = parts[0] === 'api' ? parts[1] : parts[0];
 
     if (!entity || SKIP.has(entity)) return next.handle();
+
+    // Money-movement CREATE/UPDATE gets a hand-built, entity-aware summary written
+    // directly by TransactionsService (compound multi-leg actions, party/treasury
+    // names) — only DELETE still goes through this generic path (see below).
+    if (entity === 'transactions' && action !== 'DELETE') return next.handle();
 
     // Extract the entity uid from the URL path (works for PATCH / DELETE / resolve sub-routes)
     const uidIdx = parts[0] === 'api' ? 2 : 1;
@@ -121,10 +229,16 @@ export class AuditInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap((body) => {
         if (!req.user) return;
-        const summary   = body?.no ?? body?.name ?? body?.clientName ?? null;
+
+        const isDeleteTxn = entity === 'transactions' && action === 'DELETE';
+        const summary   = isDeleteTxn
+          ? describeTxnDelete(snapshot)
+          : (body?.no ?? body?.name ?? body?.clientName ?? body?.driverName ?? null);
         const entityUid = body?.uid ?? pathUid ?? null;
         const diff      = action === 'UPDATE' && before && body
-          ? computeDiff(before, body)
+          ? (entity === 'invoices' || entity === 'deals')
+            ? computeInvoiceLikeDiff(entity, before, body)
+            : computeDiff(before, body)
           : undefined;
 
         this.prisma.auditLog

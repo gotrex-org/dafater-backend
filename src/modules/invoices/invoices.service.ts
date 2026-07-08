@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client'; // used by create()
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
@@ -30,6 +30,18 @@ export class InvoicesService {
   }
 
   updateCommission(uid: string, dto: CommissionDto) { return this.repo.updateCommission(uid, dto); }
-  remove(id: string) { return this.repo.remove(id); }
+
+  async remove(id: string, cascade: boolean) {
+    const inv = await this.repo.findByUid(id);
+    if (!inv) throw new NotFoundException('Invoice not found');
+    if (!cascade) {
+      const related = await this.repo.countRelatedTransactions(inv.id);
+      if (related > 0) {
+        throw new ConflictException(`يوجد ${related} حركة مالية مرتبطة بهذه الفاتورة — أكّد حذفها معها لحذف الفاتورة`);
+      }
+    }
+    return this.repo.remove(id);
+  }
+
   peekNextNo(partyUid: string) { return this.repo.peekNextNo(partyUid); }
 }

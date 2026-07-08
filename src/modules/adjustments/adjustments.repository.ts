@@ -11,7 +11,7 @@ export class AdjustmentsRepository {
   findAll(q: PaginationQueryDto, warehouseId?: string) {
     return paginate(this.prisma.adjustment, q, {
       where: warehouseId ? { warehouse: { uid: warehouseId } } : {},
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
       include: { product: true, warehouse: true },
     });
   }

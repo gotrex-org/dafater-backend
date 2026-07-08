@@ -5,7 +5,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 
 @Controller('audit')
-@Permissions('settings')
+@Permissions('audit', 'settings')
 export class AuditController {
   constructor(private service: AuditService) {}
 

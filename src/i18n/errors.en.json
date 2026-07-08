@@ -28,6 +28,7 @@
   "Driver not found": "Driver not found",
   "No party linked to this account": "No party is linked to this account",
   "Related record not found": "One of the linked records (e.g. treasury or party) was not found",
+  "Cannot delete: in use": "Cannot delete — this item is still used in other records",
 
   "Unauthorized": "Authentication required",
   "Forbidden": "Access denied",

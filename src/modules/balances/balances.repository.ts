@@ -108,7 +108,10 @@ export class BalancesRepository {
     const rows = await Promise.all(
       products.map(async (p) => {
         const qty = await this.stockOf(p.id, warehouseId);
-        const cost = await this.avgCost(p.id);
+        // A manually-set price (from the product's own settings) overrides the
+        // computed weighted-average purchase cost — lets you value stock directly
+        // instead of relying on purchase-invoice history (which may not exist yet).
+        const cost = p.price > 0 ? p.price : await this.avgCost(p.id);
         return { productId: p.uid, name: p.name, unit: p.unit, qty, cost, value: qty * cost };
       }),
     );

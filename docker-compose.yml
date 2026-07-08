@@ -51,7 +51,10 @@ services:
     build:
       context: ../dafater-frontend
       args:
-        NEXT_PUBLIC_API_URL: "https://abo-shama.com"
+        # Empty = same-origin/relative API calls, so the frontend works whether it's
+        # reached via the domain (HTTPS) or the bare server IP (HTTP fallback) — see
+        # frontend/src/lib/api.ts and nginx.conf's IP default_server block.
+        NEXT_PUBLIC_API_URL: ""
     restart: unless-stopped
     expose:
       - "3000"

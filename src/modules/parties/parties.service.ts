@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PartyRole } from '@prisma/client';
 import { BalancesService } from '../balances/balances.service';
 import { CreatePartyDto, LinkPartyDto, UpdatePartyDto } from './dto/party.dto';
@@ -16,8 +16,17 @@ export class PartiesService {
     const result = await this.repo.findAll(q, role, includeHidden);
     const byId = await this.balances.allPartyBalances();
     const lastById = await this.repo.lastActivityByParty();
-    result.data = result.data.map((p: any) => ({
-      ...p, balance: byId[p.id] ?? p.opening, lastActivity: lastById[p.id] ?? null,
+    // Linked client/supplier pairs share one statement (see ledger()/findOne()) — the
+    // list's balance & last-activity columns must match that, not each side's own figure.
+    result.data = await Promise.all(result.data.map(async (p: any) => {
+      const partner = p.linkedParty ?? p.linkedFrom ?? null;
+      const balance = partner
+        ? await this.balances.partyBalanceMulti([p.id, partner.id])
+        : (byId[p.id] ?? p.opening);
+      const lastActivity = partner
+        ? [lastById[p.id], lastById[partner.id]].filter(Boolean).sort((a, b) => a!.getTime() - b!.getTime()).pop() ?? null
+        : (lastById[p.id] ?? null);
+      return { ...p, balance, lastActivity };
     }));
     return result;
   }
@@ -32,9 +41,19 @@ export class PartiesService {
     return { ...party, balance, linkedParty: (party as any).linkedParty ?? null, linkedFrom: (party as any).linkedFrom ?? null };
   }
 
-  async ledger(id: string, from?: string, to?: string) {
+  async ledger(id: string, from?: string, to?: string, user?: { admin?: boolean; ledgerPartyIds?: string[] }) {
     const party = await this.findOne(id);
     const partner = (party as any).linkedParty ?? (party as any).linkedFrom ?? null;
+
+    // Staff restricted to specific parties (ledgerPartyIds) can only view those parties'
+    // statements — or the partner of a linked party they're allowed to see.
+    if (user && !user.admin && user.ledgerPartyIds?.length) {
+      const allowed = new Set(user.ledgerPartyIds);
+      const visibleUids = [party.uid, ...(partner ? [(partner as any).uid] : [])];
+      if (!visibleUids.some((u) => allowed.has(u))) {
+        throw new ForbiddenException('غير مصرح لك بالاطلاع على كشف حساب هذا الطرف');
+      }
+    }
 
     const partyIds = partner ? [party.id, partner.id] : [party.id];
     const txns = await this.repo.ledgerTransactions(partyIds);
@@ -112,5 +131,16 @@ export class PartiesService {
 
   create(dto: CreatePartyDto) { return this.repo.create(dto); }
   update(id: string, dto: UpdatePartyDto) { return this.repo.update(id, dto); }
-  remove(id: string) { return this.repo.remove(id); }
+  getDirectSaleParty() { return this.repo.findOrCreateDirectSaleParty(); }
+
+  async remove(id: string, cascade: boolean) {
+    const party = await this.repo.findRawByUid(id);
+    if (!cascade) {
+      const related = await this.repo.countRelated(party.id);
+      if (related > 0) {
+        throw new ConflictException(`يوجد ${related} حركة/فاتورة/صفقة مرتبطة بهذا الطرف — احذفها أولاً أو أكّد حذفها معه`);
+      }
+    }
+    return this.repo.removeCascade(party.id);
+  }
 }

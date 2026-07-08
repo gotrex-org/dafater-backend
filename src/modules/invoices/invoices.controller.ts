@@ -43,7 +43,7 @@ export class InvoicesController {
 
   @Delete(':id')
   @Permissions('invoices.delete')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@Param('id') id: string, @Query('cascade') cascade?: string) {
+    return this.service.remove(id, cascade === 'true');
   }
 }

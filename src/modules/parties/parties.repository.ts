@@ -66,6 +66,36 @@ export class PartiesRepository {
     });
   }
 
+  async countRelated(id: number) {
+    const [transactions, invoices, deals, requests] = await Promise.all([
+      this.prisma.transaction.count({ where: { partyId: id } }),
+      this.prisma.invoice.count({ where: { partyId: id } }),
+      this.prisma.deal.count({ where: { OR: [{ clientId: id }, { supplierId: id }] } }),
+      this.prisma.request.count({ where: { clientId: id } }),
+    ]);
+    return transactions + invoices + deals + requests;
+  }
+
+  async removeCascade(id: number) {
+    // Invoice/Deal/Request are onDelete: Restrict on their party FKs (unlike
+    // Transaction, which is Cascade) — delete them explicitly first. Each of
+    // those cascades its own items/transactions via its own relations.
+    await this.prisma.invoice.deleteMany({ where: { partyId: id } });
+    await this.prisma.deal.deleteMany({ where: { OR: [{ clientId: id }, { supplierId: id }] } });
+    await this.prisma.request.deleteMany({ where: { clientId: id } });
+    // Remaining direct transactions (collections, adjustments, transfers…) and the
+    // party itself: Transaction.party is onDelete: Cascade, so a plain delete finishes it.
+    return this.prisma.party.delete({ where: { id } });
+  }
+
+  async findOrCreateDirectSaleParty() {
+    const existing = await this.prisma.party.findFirst({ where: { isDirectSale: true } });
+    if (existing) return existing;
+    return this.prisma.party.create({
+      data: { name: 'بيع مباشر', role: 'CLIENT', type: 'INVOICE', isDirectSale: true },
+    });
+  }
+
   setLink(uid: string, linkedPartyId: number) {
     return this.prisma.party.update({ where: { uid }, data: { linkedPartyId } });
   }
@@ -80,9 +110,5 @@ export class PartiesRepository {
 
   update(id: string, dto: UpdatePartyDto) {
     return this.prisma.party.update({ where: { uid: id }, data: dto });
-  }
-
-  remove(id: string) {
-    return this.prisma.party.delete({ where: { uid: id } });
   }
 }

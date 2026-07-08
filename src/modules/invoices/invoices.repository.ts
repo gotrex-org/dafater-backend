@@ -161,6 +161,14 @@ export class InvoicesRepository {
     });
   }
 
+  findByUid(id: string) {
+    return this.prisma.invoice.findUnique({ where: { uid: id }, select: { id: true } });
+  }
+
+  countRelatedTransactions(id: number) {
+    return this.prisma.transaction.count({ where: { invoiceId: id } });
+  }
+
   remove(id: string) {
     return this.prisma.invoice.delete({ where: { uid: id } });
   }
