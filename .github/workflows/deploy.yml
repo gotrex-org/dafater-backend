@@ -17,10 +17,8 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             set -e
-            echo "::group::DIAGNOSTIC — full nginx.conf (no secrets in this file) + compose env KEYS only"
-            cat /root/projects/nginx.conf 2>&1 || echo "(no file at this path)"
-            echo "--- docker-compose.yml environment KEYS only (values redacted) ---"
-            sed -E 's/^([[:space:]]*[A-Z_]+):.*/\1: <redacted>/' /root/projects/docker-compose.yml 2>&1 || echo "(no file at this path)"
+            echo "::group::DIAGNOSTIC — CORS_ORIGIN value only (an allowlist, not a secret)"
+            grep -n "CORS_ORIGIN" /root/projects/docker-compose.yml 2>&1 || echo "(no file at this path)"
             echo "::endgroup::"
             cd /root/projects/dafater-backend
             git fetch origin main
