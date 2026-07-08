@@ -17,13 +17,17 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             set -e
-            echo "::group::DIAGNOSTIC — CORS_ORIGIN value only (an allowlist, not a secret)"
-            grep -n "CORS_ORIGIN" /root/projects/docker-compose.yml 2>&1 || echo "(no file at this path)"
-            echo "::endgroup::"
             cd /root/projects/dafater-backend
             git fetch origin main
             git reset --hard origin/main
             cd /root/projects
+            # docker-compose.yml and nginx.conf used to be standalone files here,
+            # disconnected from git — that's what caused the stale NEXT_PUBLIC_API_URL
+            # bug. The repo copies are now the single source of truth; sync them into
+            # place on every deploy instead of hand-editing the server directly.
+            cp dafater-backend/docker-compose.yml docker-compose.yml
+            cp dafater-backend/nginx.conf nginx.conf
             docker compose build backend
             docker compose up -d --no-deps backend
+            docker compose up -d --force-recreate --no-deps nginx
             docker image prune -f
