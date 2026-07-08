@@ -17,17 +17,10 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             set -e
-            echo "::group::DIAGNOSTIC — server layout (structure only, no secret values)"
-            ls -la /root/projects
-            echo "--- docker-compose.yml: service names, build contexts, non-secret args (no cat — may hold live secrets) ---"
-            grep -nE "^\s*[a-z_-]+:\s*$|context:|dockerfile:|NEXT_PUBLIC_API_URL|nginx\.conf|image:" /root/projects/docker-compose.yml 2>&1 || echo "(no file at this path)"
-            echo "--- nginx.conf: routing lines only ---"
-            grep -nE "server_name|proxy_pass|listen" /root/projects/nginx.conf 2>&1 || echo "(no file at this path)"
-            echo "--- symlink checks ---"
-            readlink -f /root/projects/docker-compose.yml 2>&1 || true
-            readlink -f /root/projects/nginx.conf 2>&1 || true
-            echo "--- dafater-frontend dir, if present ---"
-            ls -la /root/projects/dafater-frontend 2>&1 || echo "(no such dir)"
+            echo "::group::DIAGNOSTIC — full nginx.conf (no secrets in this file) + compose env KEYS only"
+            cat /root/projects/nginx.conf 2>&1 || echo "(no file at this path)"
+            echo "--- docker-compose.yml environment KEYS only (values redacted) ---"
+            sed -E 's/^([[:space:]]*[A-Z_]+):.*/\1: <redacted>/' /root/projects/docker-compose.yml 2>&1 || echo "(no file at this path)"
             echo "::endgroup::"
             cd /root/projects/dafater-backend
             git fetch origin main
