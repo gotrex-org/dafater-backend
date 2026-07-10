@@ -47,7 +47,9 @@ const BEFORE_FETCH: Record<
   orders:        (p, uid) => p.order.findUnique({ where: { uid }, select: { name: true, phone: true, note: true, status: true } }),
 };
 
-// Full entity snapshot BEFORE a DELETE — used for undo/restore
+// Full entity snapshot (with relation names) — captured BEFORE a DELETE (for
+// undo/restore) and AFTER a CREATE (so the activity-log detail shows every field
+// of the new record: quantity, product, date, party, … not just a short summary).
 const DELETE_FETCH: Record<
   string,
   (p: PrismaService, uid: string) => Promise<any>
@@ -61,17 +63,17 @@ const DELETE_FETCH: Record<
     if (!txn) return null;
     return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId }, include }) : [txn];
   },
-  invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
-  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: true, transactions: true } }),
+  invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, party: { select: { name: true } }, warehouse: { select: { name: true } } } }),
+  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, client: { select: { name: true } }, supplier: { select: { name: true } } } }),
   manifests:            (p, uid) => p.manifest.findUnique({ where: { uid }, include: { items: true } }),
   'driver-trips':       (p, uid) => p.driverTrip.findUnique({ where: { uid }, include: { payments: true } }),
   parties:              (p, uid) => p.party.findUnique({ where: { uid }, include: { transactions: true, requests: { include: { items: true } } } }),
   products:             (p, uid) => p.product.findUnique({ where: { uid } }),
   'expense-categories': (p, uid) => p.expenseCategory.findUnique({ where: { uid } }),
-  adjustments:          (p, uid) => p.adjustment.findUnique({ where: { uid } }),
+  adjustments:          (p, uid) => p.adjustment.findUnique({ where: { uid }, include: { product: { select: { name: true, unit: true } }, warehouse: { select: { name: true } } } }),
   drivers:              (p, uid) => p.driver.findUnique({ where: { uid } }),
   warehouses:           (p, uid) => p.warehouse.findUnique({ where: { uid } }),
-  loans:                (p, uid) => p.loan.findUnique({ where: { uid }, include: { returns: true } }),
+  loans:                (p, uid) => p.loan.findUnique({ where: { uid }, include: { returns: true, product: { select: { name: true } }, warehouse: { select: { name: true } }, party: { select: { name: true } } } }),
   orders:               (p, uid) => p.order.findUnique({ where: { uid }, include: { items: true } }),
   requests:             (p, uid) => p.request.findUnique({ where: { uid }, include: { items: true } }),
   'dollar-agents':      (p, uid) => p.dollarAgent.findUnique({ where: { uid }, include: { txs: true } }),
@@ -175,6 +177,53 @@ function computeInvoiceLikeDiff(
   return Object.keys(changes).length ? changes : undefined;
 }
 
+// Build a human sentence describing the record — what it is, its quantity, and for
+// whom — from the full snapshot (available for create/update/delete alike). Shown as
+// the activity-log row's "التفاصيل" so you can read what happened without opening it.
+function buildSummary(entity: string, snap: any): string | null {
+  if (!snap || Array.isArray(snap)) return null; // transactions handled separately
+  const s = snap;
+  const n = (v: any) => (v == null ? '' : String(v));
+  const items = Array.isArray(s.items) ? s.items.length : 0;
+  const itemsTxt = items ? ` — ${items} صنف` : '';
+  switch (entity) {
+    case 'adjustments':
+      return `${s.product?.name ?? 'صنف'} ${s.qty > 0 ? '+' : ''}${n(s.qty)}${s.warehouse?.name ? ' — ' + s.warehouse.name : ''}`;
+    case 'invoices':
+      return `فاتورة ${s.kind === 'SALE' ? 'بيع' : 'شراء'} #${n(s.no)}${s.party?.name ? ' — ' + s.party.name : ''}${itemsTxt}`;
+    case 'deals': {
+      const who = [s.client?.name ? `عميل ${s.client.name}` : '', s.supplier?.name ? `مورد ${s.supplier.name}` : ''].filter(Boolean).join(' / ');
+      return `بيع خارجي #${n(s.no)}${who ? ' — ' + who : ''}${itemsTxt}`;
+    }
+    case 'loans':
+      return `عارية: ${s.product?.name ?? 'صنف'} ${n(s.qty)}${s.borrowerName || s.party?.name ? ' — ' + (s.borrowerName || s.party?.name) : ''}`;
+    case 'manifests':
+      return `كشف عربية #${n(s.no)}${s.clientName ? ' — ' + s.clientName : ''}${s.driverName ? ' — سائق ' + s.driverName : ''}`;
+    case 'orders':
+      return `طلبية — ${n(s.name)}${itemsTxt}`;
+    case 'requests':
+      return `طلب عميل${itemsTxt}`;
+    case 'parties':
+      return `${s.role === 'CLIENT' ? 'عميل' : s.role === 'SUPPLIER' ? 'مورد' : 'طرف'}: ${n(s.name)}`;
+    case 'products':
+      return `صنف: ${n(s.name)}`;
+    case 'treasury':
+      return `خزنة: ${n(s.name)}`;
+    case 'warehouses':
+      return `مخزن: ${n(s.name)}`;
+    case 'expense-categories':
+      return `بند مصروف: ${n(s.name)}`;
+    case 'drivers':
+      return `سائق: ${n(s.name)}`;
+    case 'dollar-agents':
+      return `وكيل دولار: ${n(s.name)}`;
+    case 'driver-trips':
+      return `رحلة سائق: ${n(s.driverName)}${s.agreedFreight ? ' — ناولون ' + n(s.agreedFreight) : ''}`;
+    default:
+      return null;
+  }
+}
+
 // Human summary for a deleted transaction (or its whole group), built from the
 // enriched DELETE_FETCH snapshot — falls back gracefully if a leg has no party/treasury.
 function describeTxnDelete(snapshot: any): string | null {
@@ -230,30 +279,44 @@ export class AuditInterceptor implements NestInterceptor {
       tap((body) => {
         if (!req.user) return;
 
-        const isDeleteTxn = entity === 'transactions' && action === 'DELETE';
-        const summary   = isDeleteTxn
-          ? describeTxnDelete(snapshot)
-          : (body?.no ?? body?.name ?? body?.clientName ?? body?.driverName ?? null);
-        const entityUid = body?.uid ?? pathUid ?? null;
-        const diff      = action === 'UPDATE' && before && body
-          ? (entity === 'invoices' || entity === 'deals')
-            ? computeInvoiceLikeDiff(entity, before, body)
-            : computeDiff(before, body)
-          : undefined;
+        // Fire-and-forget async write: CREATE/UPDATE re-fetch the record after the
+        // handler ran, so the activity-log detail shows the full current state of the
+        // record — every field, with relation names — for adds, edits, and deletes alike.
+        void (async () => {
+          const isDeleteTxn = entity === 'transactions' && action === 'DELETE';
+          const entityUid = body?.uid ?? pathUid ?? null;
 
-        this.prisma.auditLog
-          .create({
-            data: {
-              userName: req.user.name,
-              action,
-              entity,
-              entityUid: entityUid ? String(entityUid) : null,
-              summary: summary ? String(summary) : null,
-              ...(diff ? { diff } : {}),
-              ...(snapshot ? { snapshot } : {}),
-            },
-          })
-          .catch(() => undefined);
+          // Full snapshot of the record: pre-fetched for DELETE, re-fetched here for
+          // CREATE/UPDATE (on UPDATE it complements the field-level diff with the
+          // complete post-change record).
+          let fullSnapshot = snapshot;
+          if ((action === 'CREATE' || action === 'UPDATE') && entityUid && DELETE_FETCH[entity]) {
+            fullSnapshot = await DELETE_FETCH[entity](this.prisma, entityUid).catch(() => null);
+          }
+
+          const summary = isDeleteTxn
+            ? describeTxnDelete(snapshot)
+            : (buildSummary(entity, fullSnapshot) ?? body?.no ?? body?.name ?? body?.clientName ?? body?.driverName ?? null);
+          const diff = action === 'UPDATE' && before && body
+            ? (entity === 'invoices' || entity === 'deals')
+              ? computeInvoiceLikeDiff(entity, before, body)
+              : computeDiff(before, body)
+            : undefined;
+
+          await this.prisma.auditLog
+            .create({
+              data: {
+                userName: req.user.name,
+                action,
+                entity,
+                entityUid: entityUid ? String(entityUid) : null,
+                summary: summary ? String(summary) : null,
+                ...(diff ? { diff } : {}),
+                ...(fullSnapshot ? { snapshot: fullSnapshot } : {}),
+              },
+            })
+            .catch(() => undefined);
+        })();
       }),
     );
   }

@@ -73,7 +73,10 @@ export class TreasuryRepository {
     const txns = await this.prisma.transaction.findMany({
       where: { AND: [cashCondition, { OR: [{ treasuryId: acc.id }, { treasuryId2: acc.id }] }] },
       orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
-      include: { treasury: true, treasury2: true, party: true, category: true },
+      // invoice/deal uids let the frontend deep-link a movement back to its source
+      // document (the UidSerializer maps invoiceId/dealId → the related uid only when
+      // the relation is included here).
+      include: { treasury: true, treasury2: true, party: true, category: true, invoice: { select: { uid: true } }, deal: { select: { uid: true } } },
     });
 
     let running = acc.opening || 0;
