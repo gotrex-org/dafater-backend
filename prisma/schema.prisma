@@ -116,6 +116,7 @@ model Party {
 
   transactions     Transaction[]
   invoices         Invoice[]
+  returns          Return[]
   dealsAsClient    Deal[]   @relation("DealClient")
   dealsAsSupplier  Deal[]   @relation("DealSupplier")
   requests         Request[]
@@ -142,6 +143,7 @@ model TreasuryAccount {
   transactionsAlt   Transaction[] @relation("TxTreasury2")
   invoices          Invoice[]
   deals             Deal[]
+  returns           Return[]
   dollarTxs         DollarAgentTx[]
 
   createdAt DateTime @default(now())
@@ -155,6 +157,7 @@ model Warehouse {
 
   invoices    Invoice[]
   adjustments Adjustment[]
+  returns     Return[]
   loans       Loan[]
 
   createdAt DateTime @default(now())
@@ -179,6 +182,7 @@ model Product {
   pinPurchase Boolean @default(false)
 
   invoiceItems InvoiceItem[]
+  returnItems  ReturnItem[]
   dealItems    DealItem[]
   adjustments  Adjustment[]
   loans        Loan[]
@@ -242,6 +246,9 @@ model Transaction {
   deal   Deal?   @relation(fields: [dealId], references: [id], onDelete: Cascade)
   dealId Int?
 
+  return   Return? @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  returnId Int?
+
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
 
@@ -291,6 +298,7 @@ model Invoice {
   items        InvoiceItem[]
   transactions Transaction[]
   manifests    Manifest[]
+  returns      Return[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -310,6 +318,58 @@ model InvoiceItem {
   price     Float
 
   @@index([invoiceId])
+}
+
+// ------------------------------ returns ------------------------------
+// A return (مرتجع) of goods from an invoice. kind mirrors the original sale/purchase:
+//   SALE     = عميل رجّع بضاعة → المخزن يزيد، ويتعمل له credit (يقل اللي عليه)
+//   PURCHASE = رجّعنا بضاعة للمورد → المخزن يقل، ويتعمل debit للمورد (يقل اللي له)
+// Optionally refunds cash through a treasury. May be linked to the original invoice, or
+// stand alone (free return where you pick the party/items manually).
+model Return {
+  id   Int         @id @default(autoincrement())
+  uid  String      @unique @default(cuid())
+  kind InvoiceKind
+  no   String
+  date DateTime
+
+  party   Party @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyId Int
+
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouseId Int
+
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId Int?
+
+  // Cash refunded (SALE) / received back (PURCHASE), and the treasury it moved through.
+  refund     Float            @default(0)
+  treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId Int?
+
+  note String?
+
+  items        ReturnItem[]
+  transactions Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@index([partyId])
+}
+
+model ReturnItem {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  return    Return  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  returnId  Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId Int
+  qty       Float
+  price     Float
+
+  @@index([returnId])
 }
 
 // ------------------------------ deals ------------------------------

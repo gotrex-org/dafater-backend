@@ -94,6 +94,13 @@ export class BalancesRepository {
     });
     let qty = 0;
     for (const it of items) qty += it.invoice.kind === 'PURCHASE' ? it.qty : -it.qty;
+    // Returns move stock the opposite way to the sale/purchase they reverse: a SALE return
+    // brings goods back (qty +), a PURCHASE return sends goods out to the supplier (qty -).
+    const returnItems = await this.prisma.returnItem.findMany({
+      where: { productId, return: { warehouseId } },
+      select: { qty: true, return: { select: { kind: true } } },
+    });
+    for (const it of returnItems) qty += it.return.kind === 'SALE' ? it.qty : -it.qty;
     const adj = await this.prisma.adjustment.aggregate({
       where: { productId, warehouseId },
       _sum: { qty: true },
