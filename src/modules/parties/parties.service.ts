@@ -102,7 +102,14 @@ export class PartiesService {
         invoiceItems: t.invoice
           ? t.invoice.items.map((it: any) => ({ name: it.product?.name ?? '', qty: it.qty, price: it.price }))
           : t.deal
-          ? t.deal.items.map((it: any) => ({ name: it.product?.name ?? '', qty: it.qty, price: it.price }))
+          // A deal has two prices per item: buy (from supplier) and sell (to client). Each
+          // side's statement must show its own price — the supplier sees the buy price, not
+          // the sell price (which would leak the margin and misstate what we owe them).
+          ? t.deal.items.map((it: any) => ({
+              name: it.product?.name ?? '',
+              qty: it.qty,
+              price: (t as any).party?.role === 'SUPPLIER' ? (it.buyPrice ?? it.price) : it.price,
+            }))
           : null,
       });
     }
