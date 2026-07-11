@@ -284,7 +284,11 @@ export class AuditInterceptor implements NestInterceptor {
         // record — every field, with relation names — for adds, edits, and deletes alike.
         void (async () => {
           const isDeleteTxn = entity === 'transactions' && action === 'DELETE';
-          const entityUid = body?.uid ?? pathUid ?? null;
+          // The global UidSerializer runs before this tap and renames the response's
+          // `uid` → `id` (a cuid string), so read whichever is present. Without this the
+          // created record's uid was lost, so CREATE entries got no snapshot at all.
+          const bodyUid = body?.uid ?? (typeof body?.id === 'string' ? body.id : undefined);
+          const entityUid = bodyUid ?? pathUid ?? null;
 
           // Full snapshot of the record: pre-fetched for DELETE, re-fetched here for
           // CREATE/UPDATE (on UPDATE it complements the field-level diff with the
