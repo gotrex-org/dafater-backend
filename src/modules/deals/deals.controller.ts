@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateDealDto, DealCommissionDto } from './dto/deals.dto';
 import { DealsService } from './deals.service';
@@ -25,8 +26,8 @@ export class DealsController {
   }
 
   @Post()
-  create(@Body() dto: CreateDealDto) {
-    return this.service.create(dto);
+  create(@Body() dto: CreateDealDto, @CurrentUser() user: any) {
+    return this.service.create(dto, user?.intId);
   }
 
   @Patch(':id/commission')
@@ -36,8 +37,8 @@ export class DealsController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: CreateDealDto) {
-    return this.service.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: CreateDealDto, @CurrentUser() user: any) {
+    return this.service.update(id, dto, user?.intId);
   }
 
   @Delete(':id')

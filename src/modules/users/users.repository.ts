@@ -20,6 +20,10 @@ export class UsersRepository {
     return this.prisma.party.findUniqueOrThrow({ where: { uid } });
   }
 
+  findByUid(uid: string) {
+    return this.prisma.user.findUnique({ where: { uid }, select: { id: true, uid: true, isPrimary: true } });
+  }
+
   create(data: any) {
     return this.prisma.user.create({ data, include: { party: PARTY_SELECT } });
   }

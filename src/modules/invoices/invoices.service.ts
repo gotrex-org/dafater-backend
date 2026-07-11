@@ -16,17 +16,17 @@ export class InvoicesService {
     return inv;
   }
 
-  create(dto: CreateInvoiceDto) {
+  create(dto: CreateInvoiceDto, createdById?: number) {
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid || 0;
     const isSale = dto.kind === InvoiceKind.SALE;
-    return this.repo.create(dto, { total, paid, isSale });
+    return this.repo.create(dto, { total, paid, isSale, createdById });
   }
 
-  update(id: string, dto: UpdateInvoiceDto) {
+  update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid ?? 0;
-    return this.repo.update(id, dto, { total, paid });
+    return this.repo.update(id, dto, { total, paid, createdById });
   }
 
   updateCommission(uid: string, dto: CommissionDto) { return this.repo.updateCommission(uid, dto); }

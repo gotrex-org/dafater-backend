@@ -25,6 +25,27 @@ export class BalancesRepository {
     return totalOpening + (agg._sum.debit || 0) - (agg._sum.credit || 0);
   }
 
+  // Weighted-average EGP-per-USD rate per party, over its rate-carrying (USD-invoice)
+  // movements — weighted by the USD amount of each movement. Used by the trial balance
+  // to convert a USD party's balance to EGP.
+  async avgExchangeRateByParty(): Promise<Record<number, number>> {
+    const txns = await this.prisma.transaction.findMany({
+      where: { exchangeRate: { gt: 0 }, partyId: { not: null } },
+      select: { partyId: true, debit: true, credit: true, exchangeRate: true },
+    });
+    const acc: Record<number, { w: number; wr: number }> = {};
+    for (const t of txns) {
+      const w = (t.debit || 0) + (t.credit || 0);
+      if (w <= 0 || t.partyId == null) continue;
+      if (!acc[t.partyId]) acc[t.partyId] = { w: 0, wr: 0 };
+      acc[t.partyId].w += w;
+      acc[t.partyId].wr += w * t.exchangeRate;
+    }
+    const out: Record<number, number> = {};
+    for (const [pid, v] of Object.entries(acc)) out[Number(pid)] = v.w > 0 ? v.wr / v.w : 0;
+    return out;
+  }
+
   async allPartyBalances(): Promise<Record<number, number>> {
     const parties = await this.prisma.party.findMany();
     const grouped = await this.prisma.transaction.groupBy({

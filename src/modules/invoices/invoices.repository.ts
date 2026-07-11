@@ -36,8 +36,8 @@ export class InvoicesRepository {
     });
   }
 
-  async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; isSale: boolean }) {
-    const { total, paid, isSale } = computed;
+  async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; isSale: boolean; createdById?: number }) {
+    const { total, paid, isSale, createdById } = computed;
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
@@ -58,12 +58,15 @@ export class InvoicesRepository {
       const productIdByUid = new Map(products.map((p) => [p.uid, p.id]));
       const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
 
+      // Exchange rate only meaningful on a USD (dollar) party's invoice.
+      const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
       const invoice = await tx.invoice.create({
         data: {
           kind: dto.kind,
           no,
           date,
           currency: party.currency,
+          exchangeRate: rate,
           partyId: party.id,
           warehouseId: warehouse.id,
           paid,
@@ -81,15 +84,15 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, isSale, dto });
+      const txns = this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
     });
   }
 
-  async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number }) {
-    const { total, paid } = computed;
+  async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number; createdById?: number }) {
+    const { total, paid, createdById } = computed;
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
@@ -115,11 +118,13 @@ export class InvoicesRepository {
       });
       const productIdByUid = new Map(products.map((p) => [p.uid, p.id]));
 
+      const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
       await tx.invoice.update({
         where: { id: invId },
         data: {
           date,
           currency: party.currency,
+          exchangeRate: rate,
           partyId: party.id,
           warehouseId: warehouse.id,
           paid,
@@ -138,7 +143,7 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, isSale, dto });
+      const txns = this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invId }, include: INVOICE_INCLUDE });
@@ -199,10 +204,10 @@ export class InvoicesRepository {
       party: { id: number }; treasury: { id: number } | null;
       commissionParty: { id: number; name: string } | null;
       date: Date; no: string; total: number; paid: number; isSale: boolean;
-      dto: CreateInvoiceDto | UpdateInvoiceDto;
+      dto: CreateInvoiceDto | UpdateInvoiceDto; createdById?: number; exchangeRate?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { party, treasury, commissionParty, date, no, total, paid, isSale, dto } = p;
+    const { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate } = p;
     const txns: Prisma.TransactionCreateManyInput[] = [];
     if (isSale) {
       txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: total, note: `فاتورة بيع #${no}`, invoiceId });
@@ -214,6 +219,8 @@ export class InvoicesRepository {
         txns.push({ date, type: 'commission', partyId: commissionParty.id, credit: dto.commissionAmount, note: `عمولة فاتورة #${no}`, invoiceId });
       }
     }
-    return txns;
+    // Attribute every generated movement to the user, and stamp the USD exchange rate
+    // (0 for EGP invoices) so the party's average rate can be weighted later.
+    return txns.map((t) => ({ ...t, ...(createdById ? { createdById } : {}), ...(exchangeRate ? { exchangeRate } : {}) }));
   }
 }

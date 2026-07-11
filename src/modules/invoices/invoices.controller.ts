@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client';
 import { Permissions } from '../../common/decorators/permissions.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 import { InvoicesService } from './invoices.service';
@@ -26,8 +27,8 @@ export class InvoicesController {
   }
 
   @Post()
-  create(@Body() dto: CreateInvoiceDto) {
-    return this.service.create(dto);
+  create(@Body() dto: CreateInvoiceDto, @CurrentUser() user: any) {
+    return this.service.create(dto, user?.intId);
   }
 
   @Patch(':id/commission')
@@ -37,8 +38,8 @@ export class InvoicesController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
-    return this.service.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto, @CurrentUser() user: any) {
+    return this.service.update(id, dto, user?.intId);
   }
 
   @Delete(':id')

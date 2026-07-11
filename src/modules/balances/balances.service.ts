@@ -8,6 +8,7 @@ export class BalancesService {
   partyBalance(partyId: number) { return this.repo.partyBalance(partyId); }
   partyBalanceMulti(partyIds: number[]) { return this.repo.partyBalanceMulti(partyIds); }
   allPartyBalances() { return this.repo.allPartyBalances(); }
+  avgExchangeRateByParty() { return this.repo.avgExchangeRateByParty(); }
   treasuryBalance(treasuryId: number) { return this.repo.treasuryBalance(treasuryId); }
   allTreasuryBalances() { return this.repo.allTreasuryBalances(); }
   stockOf(productId: number, warehouseId: number) { return this.repo.stockOf(productId, warehouseId); }

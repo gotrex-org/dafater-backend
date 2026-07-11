@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Invoice" ADD COLUMN     "exchangeRate" DOUBLE PRECISION;
+ALTER TABLE "Transaction" ADD COLUMN     "exchangeRate" DOUBLE PRECISION NOT NULL DEFAULT 0;

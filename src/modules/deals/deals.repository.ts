@@ -29,7 +29,7 @@ export class DealsRepository {
     return this.prisma.deal.findUniqueOrThrow({ where: { uid }, include: DEAL_INCLUDE });
   }
 
-  async create(dto: CreateDealDto) {
+  async create(dto: CreateDealDto, createdById?: number) {
     return this.prisma.$transaction(async (tx) => {
       const { client, supplier, treasury, commissionParty, productIdByUid, no } = await this.resolve(tx, dto, null);
       const { date, paidIn, paidOut, nawlon } = this.amounts(dto);
@@ -44,12 +44,12 @@ export class DealsRepository {
         },
       });
 
-      await tx.transaction.createMany({ data: this.txns(deal.id, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto }) });
+      await tx.transaction.createMany({ data: this.txns(deal.id, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, createdById }) });
       return tx.deal.findUnique({ where: { id: deal.id }, include: DEAL_INCLUDE });
     });
   }
 
-  async update(uid: string, dto: CreateDealDto) {
+  async update(uid: string, dto: CreateDealDto, createdById?: number) {
     const existing = await this.prisma.deal.findUniqueOrThrow({ where: { uid }, select: { id: true, no: true } });
     const dealId = existing.id;
 
@@ -71,7 +71,7 @@ export class DealsRepository {
         },
       });
 
-      await tx.transaction.createMany({ data: this.txns(dealId, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto }) });
+      await tx.transaction.createMany({ data: this.txns(dealId, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, createdById }) });
       return tx.deal.findUnique({ where: { id: dealId }, include: DEAL_INCLUDE });
     });
   }
@@ -144,10 +144,10 @@ export class DealsRepository {
       client: { id: number }; supplier: { id: number }; treasury: { id: number } | null;
       commissionParty: { id: number } | null; date: Date; no: string;
       sellTotal: number; buyTotal: number; paidIn: number; paidOut: number; nawlon: number;
-      dto: CreateDealDto;
+      dto: CreateDealDto; createdById?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto } = p;
+    const { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, createdById } = p;
     const txns: Prisma.TransactionCreateManyInput[] = [
       { date, type: 'بيع خارجي', partyId: client.id, debit: sellTotal, note: `بيع خارجي #${no}`, dealId },
       { date, type: 'شراء خارجي', partyId: supplier.id, credit: buyTotal, note: `شراء خارجي #${no}`, dealId },
@@ -156,6 +156,7 @@ export class DealsRepository {
     if (paidOut > 0) txns.push({ date, type: 'دفعة لمورد', partyId: supplier.id, treasuryId: treasury?.id ?? null, debit: paidOut, cashOut: paidOut, dealId });
     if (dto.commissionAmount && dto.commissionAmount > 0 && commissionParty) txns.push({ date, type: 'commission', partyId: commissionParty.id, credit: dto.commissionAmount, note: `commission صفقة #${no}`, dealId });
     if (nawlon > 0) txns.push({ date, type: 'ناولون', partyId: client.id, debit: nawlon, note: `ناولون صفقة #${no}`, dealId });
-    return txns;
+    // Attribute every generated movement to the user who created/edited the deal.
+    return createdById ? txns.map((t) => ({ ...t, createdById })) : txns;
   }
 }

@@ -16,6 +16,7 @@ export class PartiesService {
     const result = await this.repo.findAll(q, role, includeHidden);
     const byId = await this.balances.allPartyBalances();
     const lastById = await this.repo.lastActivityByParty();
+    const rateById = await this.balances.avgExchangeRateByParty();
     // Linked client/supplier pairs share one statement (see ledger()/findOne()) — the
     // list's balance & last-activity columns must match that, not each side's own figure.
     result.data = await Promise.all(result.data.map(async (p: any) => {
@@ -26,7 +27,9 @@ export class PartiesService {
       const lastActivity = partner
         ? [lastById[p.id], lastById[partner.id]].filter(Boolean).sort((a, b) => a!.getTime() - b!.getTime()).pop() ?? null
         : (lastById[p.id] ?? null);
-      return { ...p, balance, lastActivity };
+      // USD party's weighted-average rate — prefer its own, fall back to a linked partner's.
+      const avgExchangeRate = rateById[p.id] || (partner ? rateById[partner.id] : 0) || 0;
+      return { ...p, balance, lastActivity, avgExchangeRate };
     }));
     return result;
   }

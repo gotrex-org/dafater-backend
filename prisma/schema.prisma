@@ -69,6 +69,9 @@ model User {
   name      String
   pinHash   String
   admin     Boolean  @default(false)
+  // The single owner account: the only user who can see the trial balance
+  // (ميزان الحسابات), and whose account/password no other user can edit or delete.
+  isPrimary Boolean  @default(false)
   // Allowed view/permission keys: dash, invoices, deals, orders, requests,
   // manifests, entry, inventory, ledger, treasury, settings, audit
   // Sub-keys: entry.*, invoices.*, deals.*, manifests.driverTrips,
@@ -223,6 +226,9 @@ model Transaction {
   cashIn2  Float @default(0) // into treasury2
   cashOut2 Float @default(0) // out of treasury2
   expAmt   Float @default(0) // commission/expense amount
+  // EGP-per-USD rate for movements on a USD party (from the invoice or daily entry);
+  // 0 when not applicable. Lets the trial balance weight each party's average rate.
+  exchangeRate Float @default(0)
 
   // "تحصيل مجهول": cash received whose owner is unknown; sits pending until
   // resolved to a party, then credited to their ledger.
@@ -269,6 +275,9 @@ model Invoice {
   warehouseId Int
 
   currency   Currency         @default(EGP)
+  // EGP-per-USD rate captured at purchase time on a USD (dollar) invoice; null/0 for
+  // EGP invoices. Used to show the EGP equivalent and to weight the party's average rate.
+  exchangeRate Float?
 
   paid       Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)

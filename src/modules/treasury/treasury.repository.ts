@@ -76,7 +76,7 @@ export class TreasuryRepository {
       // invoice/deal uids let the frontend deep-link a movement back to its source
       // document (the UidSerializer maps invoiceId/dealId → the related uid only when
       // the relation is included here).
-      include: { treasury: true, treasury2: true, party: true, category: true, invoice: { select: { uid: true } }, deal: { select: { uid: true } } },
+      include: { treasury: true, treasury2: true, party: true, category: true, invoice: { select: { uid: true } }, deal: { select: { uid: true } }, createdBy: { select: { name: true } } },
     });
 
     let running = acc.opening || 0;

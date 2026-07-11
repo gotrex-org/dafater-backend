@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
@@ -10,6 +10,7 @@ function fmt(u: any) {
     username: u.username ?? null,
     name: u.name,
     admin: u.admin,
+    isPrimary: u.isPrimary,
     views: u.views,
     ledgerPartyIds: u.ledgerPartyIds ?? [],
     treasuryIds: u.treasuryIds ?? [],
@@ -39,8 +40,11 @@ export class UsersService {
     return fmt(user);
   }
 
-  async update(id: string, dto: UpdateUserDto) {
-    const { pin, partyId, username, ledgerPartyIds, treasuryIds, ...rest } = dto;
+  async update(id: string, dto: UpdateUserDto, currentUser?: { id?: string; isPrimary?: boolean }) {
+    await this.assertCanTouchPrimary(id, currentUser);
+    // `isPrimary` is not editable through the API — the owner flag is set once by the
+    // migration and never toggled from the UI.
+    const { pin, partyId, username, ledgerPartyIds, treasuryIds, isPrimary: _ignore, ...rest } = dto as any;
     const data: any = { ...rest };
     if (ledgerPartyIds !== undefined) data.ledgerPartyIds = ledgerPartyIds;
     if (treasuryIds !== undefined) data.treasuryIds = treasuryIds;
@@ -61,9 +65,20 @@ export class UsersService {
     return fmt(user);
   }
 
-  async remove(id: string) {
+  async remove(id: string, currentUser?: { id?: string; isPrimary?: boolean }) {
+    const target = await this.repo.findByUid(id);
+    if (target?.isPrimary) throw new ForbiddenException('لا يمكن حذف المستخدم الأساسي');
     const count = await this.repo.count();
     if (count <= 1) throw new BadRequestException('لا يمكن حذف آخر مستخدم');
     return this.repo.remove(id);
+  }
+
+  // Only the primary (owner) user may edit the primary user's account (details,
+  // password, permissions). No other user — not even another admin — can touch it.
+  private async assertCanTouchPrimary(id: string, currentUser?: { id?: string; isPrimary?: boolean }) {
+    const target = await this.repo.findByUid(id);
+    if (target?.isPrimary && !currentUser?.isPrimary) {
+      throw new ForbiddenException('لا يمكن تعديل المستخدم الأساسي');
+    }
   }
 }

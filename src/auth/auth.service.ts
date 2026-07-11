@@ -41,6 +41,7 @@ export class AuthService {
         id: user.uid,
         name: user.name,
         admin: user.admin,
+        isPrimary: user.isPrimary,
         views: user.views,
         ledgerPartyIds: user.ledgerPartyIds ?? [],
         treasuryIds: user.treasuryIds ?? [],
