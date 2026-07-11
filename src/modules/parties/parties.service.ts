@@ -41,7 +41,11 @@ export class PartiesService {
     const balance = partner
       ? await this.balances.partyBalanceMulti([party.id, partner.id])
       : await this.balances.partyBalance(party.id);
-    return { ...party, balance, linkedParty: (party as any).linkedParty ?? null, linkedFrom: (party as any).linkedFrom ?? null };
+    // Weighted-average EGP-per-USD rate for a USD party (0 if none) — so a deep-linked
+    // ledger (opened by uid, not from the list) can still show the EGP equivalent.
+    const rateById = await this.balances.avgExchangeRateByParty();
+    const avgExchangeRate = rateById[party.id] || (partner ? rateById[partner.id] : 0) || 0;
+    return { ...party, balance, avgExchangeRate, linkedParty: (party as any).linkedParty ?? null, linkedFrom: (party as any).linkedFrom ?? null };
   }
 
   async ledger(id: string, from?: string, to?: string, user?: { admin?: boolean; ledgerPartyIds?: string[] }) {
