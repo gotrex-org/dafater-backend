@@ -104,11 +104,21 @@ export class TransactionsRepository {
       const origCredit = Number(txn.credit) || 0;
       const origCashIn = Number(txn.cashIn) || 0;
       const origCashOut = Number(txn.cashOut) || 0;
+      const origCashIn2 = Number(txn.cashIn2) || 0;
+      const origCashOut2 = Number(txn.cashOut2) || 0;
 
       if (origDebit > 0) data.debit = amt;
       if (origCredit > 0) data.credit = amt;
       if (origCashIn > 0) data.cashIn = origCredit > 0 ? (amt / origCredit) * origCashIn : amt;
       if (origCashOut > 0) data.cashOut = origDebit > 0 ? (amt / origDebit) * origCashOut : amt;
+
+      // A treasury→treasury transfer is a single row: the "from" side is cashOut/cashIn on
+      // `treasury`, the "to" side is cashIn2/cashOut2 on `treasury2`. Editing the amount must
+      // move BOTH treasuries — scale the second leg by the same ratio as the edited amount so
+      // any currency-transfer rate is preserved (and same-currency stays equal on both sides).
+      const base = origCashOut || origCashIn || origDebit || origCredit || 0;
+      if (origCashIn2 > 0) data.cashIn2 = base > 0 ? (amt / base) * origCashIn2 : amt;
+      if (origCashOut2 > 0) data.cashOut2 = base > 0 ? (amt / base) * origCashOut2 : amt;
     }
 
     const updated = await this.prisma.transaction.update({
