@@ -142,22 +142,31 @@ export class ReportsService {
     };
   }
 
-  // ربح وخسارة — revenue vs. cost vs. expenses for the period.
+  // ربح وخسارة — revenue vs. cost vs. expenses for the period. Expenses split into
+  // operating (salaries/rent — standalone) and goods-related (freight/شاي — added to cost).
   async profitLoss(from?: string, to?: string) {
     const s = await this.summary(from, to);
     const date = this.range(from, to);
-    const exp = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف', ...(date ? { date } : {}) },
+    const opAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف', ...(date ? { date } : {}), OR: [{ categoryId: null }, { category: { addsToGoods: false } }] },
       _sum: { cashOut: true },
     });
-    const expenses = exp._sum.cashOut || 0;
-    const netCost = s.purchases - s.purchaseReturns;
+    const goodsAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف', ...(date ? { date } : {}), category: { addsToGoods: true } },
+      _sum: { cashOut: true },
+    });
+    const expenses = opAgg._sum.cashOut || 0;       // مصاريف تشغيلية
+    const goodsExpenses = goodsAgg._sum.cashOut || 0; // مصاريف على البضاعة
+    const revenue = s.netSales;
+    const cost = (s.purchases - s.purchaseReturns) + goodsExpenses;
+    const grossProfit = revenue - cost;
     return {
-      revenue: s.netSales,       // net sales
-      cost: netCost,             // net purchases (تكلفة تقديرية)
-      grossProfit: s.grossProfit,
-      expenses,                  // مصاريف تشغيلية
-      netProfit: s.grossProfit - expenses,
+      revenue,
+      cost,             // net purchases + مصاريف البضاعة
+      goodsExpenses,
+      grossProfit,
+      expenses,         // مصاريف تشغيلية فقط
+      netProfit: grossProfit - expenses,
     };
   }
 }

@@ -262,6 +262,8 @@ model ExpenseCategory {
   id   Int    @id @default(autoincrement())
   uid  String @unique @default(cuid())
   name String
+  // true = مصروف يُضاف على تكلفة البضاعة (زي الناولون والشاي)؛ false = مصروف تشغيلي (مرتبات/إيجار)
+  addsToGoods Boolean @default(false)
 
   transactions Transaction[]
 
