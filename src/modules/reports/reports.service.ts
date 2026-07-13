@@ -88,6 +88,30 @@ export class ReportsService {
     return { months, weekdays, peakMonth, peakDay };
   }
 
+  // عملاء بقالهم فترة ما اشتغلوش — clients who transacted before but not in the last N days.
+  async inactiveClients(minDays = 45) {
+    const clients = await this.prisma.party.findMany({
+      where: { role: 'CLIENT', hidden: false },
+      select: { id: true, uid: true, name: true },
+    });
+    if (!clients.length) return [];
+    const acts = await this.prisma.transaction.groupBy({
+      by: ['partyId'],
+      _max: { date: true },
+      where: { partyId: { in: clients.map((c) => c.id) } },
+    });
+    const lastById = new Map(acts.map((a) => [a.partyId, a._max.date]));
+    const now = Date.now();
+    return clients
+      .map((c) => {
+        const last = lastById.get(c.id) ?? null;
+        const daysSince = last ? Math.floor((now - new Date(last).getTime()) / 86400000) : null;
+        return { id: c.uid, name: c.name, lastActivity: last, daysSince };
+      })
+      .filter((r) => r.daysSince != null && r.daysSince >= minDays)
+      .sort((a, b) => (b.daysSince || 0) - (a.daysSince || 0));
+  }
+
   // Headline totals for the period.
   async summary(from?: string, to?: string) {
     const date = this.range(from, to);
