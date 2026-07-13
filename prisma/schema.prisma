@@ -390,6 +390,9 @@ model InvoiceItem {
   productId Int
   qty       Float
   price     Float
+  // تكاليف إضافية على بند الشراء (لكل السطر) لحساب صافي تكلفة الصنف عليك (landed cost)
+  freight    Float @default(0) // ناولون
+  commission Float @default(0) // عمولة
 
   @@index([invoiceId])
 }

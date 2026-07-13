@@ -8,6 +8,8 @@ export class InvoiceItemDto {
   @IsString() productId: string;
   @IsNumber() qty: number;
   @IsNumber() price: number;
+  @IsOptional() @IsNumber() freight?: number;    // ناولون على البند (شراء)
+  @IsOptional() @IsNumber() commission?: number; // عمولة على البند (شراء)
 }
 
 export class CreateInvoiceDto {
