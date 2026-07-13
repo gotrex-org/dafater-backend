@@ -34,6 +34,7 @@ import { ReturnsModule } from './modules/returns/returns.module';
 import { RemindersModule } from './modules/reminders/reminders.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { FinanceModule } from './modules/finance/finance.module';
+import { DiscountsModule } from './modules/discounts/discounts.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { FinanceModule } from './modules/finance/finance.module';
     RemindersModule,
     ReportsModule,
     FinanceModule,
+    DiscountsModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

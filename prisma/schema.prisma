@@ -182,6 +182,7 @@ model Party {
   transactions     Transaction[]
   invoices         Invoice[]
   returns          Return[]
+  discounts        Discount[]
   dealsAsClient    Deal[]   @relation("DealClient")
   dealsAsSupplier  Deal[]   @relation("DealSupplier")
   requests         Request[]
@@ -314,6 +315,9 @@ model Transaction {
   return   Return? @relation(fields: [returnId], references: [id], onDelete: Cascade)
   returnId Int?
 
+  discount   Discount? @relation(fields: [discountId], references: [id], onDelete: Cascade)
+  discountId Int?
+
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
 
@@ -437,6 +441,24 @@ model ReturnItem {
   price     Float
 
   @@index([returnId])
+}
+
+// ------------------------------ discounts ------------------------------
+// An indirect discount not tied to a single invoice (e.g. a supplier's monthly rebate on
+// purchases, or a discount granted to a client). It adjusts the party's ledger: a SUPPLIER
+// discount reduces what we owe (debit), a CLIENT discount reduces what they owe (credit).
+model Discount {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  date      DateTime
+  party     Party    @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyId   Int
+  amount    Float    @default(0)
+  note      String?
+  transactions Transaction[]
+  createdAt DateTime @default(now())
+
+  @@index([partyId])
 }
 
 // ------------------------------ deals ------------------------------
