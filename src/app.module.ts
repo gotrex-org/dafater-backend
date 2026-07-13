@@ -31,6 +31,8 @@ import { LoansModule } from './modules/loans/loans.module';
 import { DriverTripsModule } from './modules/driver-trips/driver-trips.module';
 import { DriversModule } from './modules/drivers/drivers.module';
 import { ReturnsModule } from './modules/returns/returns.module';
+import { RemindersModule } from './modules/reminders/reminders.module';
+import { ReportsModule } from './modules/reports/reports.module';
 
 @Module({
   imports: [
@@ -69,6 +71,8 @@ import { ReturnsModule } from './modules/returns/returns.module';
     DriverTripsModule,
     DriversModule,
     ReturnsModule,
+    RemindersModule,
+    ReportsModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

@@ -60,6 +60,20 @@ enum UserRole {
   CUSTOMER
 }
 
+// أنواع التذكيرات الشخصية
+enum ReminderKind {
+  INSTALLMENT // قسط يُدفع
+  COLLECT     // نقدية تتحصّل
+  PAY         // نقدية تتدفع
+  APPOINTMENT // موعد
+  OTHER       // شخصي / أخرى
+}
+
+enum ReminderRecurrence {
+  MONTHLY // كل شهر في يوم محدّد
+  ONCE    // مرة واحدة في تاريخ محدّد
+}
+
 // ----------------------------- auth -----------------------------
 
 model User {
@@ -88,8 +102,32 @@ model User {
   party        Party?   @relation(fields: [partyId], references: [id])
   partyId      Int?
   createdTransactions Transaction[]
+  reminders           Reminder[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Personal reminders private to their owner (each user sees only their own): monthly
+// bills/installments on a chosen day, cash to collect/pay, appointments, anything personal.
+model Reminder {
+  id         Int                @id @default(autoincrement())
+  uid        String             @unique @default(cuid())
+  title      String
+  kind       ReminderKind       @default(OTHER)
+  amount     Float              @default(0)
+  recurrence ReminderRecurrence @default(MONTHLY)
+  dayOfMonth Int? // 1..31 — for MONTHLY
+  date       DateTime? // for ONCE
+  note       String?
+  // MONTHLY: "YYYY-MM" of the last month marked done. ONCE: doneAt set when done.
+  doneMonth  String?
+  doneAt     DateTime?
+  owner      User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId    Int
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([ownerId])
 }
 
 // --------------------------- master data ---------------------------
