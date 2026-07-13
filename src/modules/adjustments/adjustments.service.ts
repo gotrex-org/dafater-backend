@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateAdjustmentDto } from './dto/adjustments.dto';
+import { CreateAdjustmentDto, TransferStockDto } from './dto/adjustments.dto';
 import { AdjustmentsRepository } from './adjustments.repository';
 
 @Injectable()
@@ -13,6 +13,10 @@ export class AdjustmentsService {
 
   create(dto: CreateAdjustmentDto) {
     return this.repo.create(dto);
+  }
+
+  transfer(dto: TransferStockDto) {
+    return this.repo.transfer(dto);
   }
 
   remove(id: string) {

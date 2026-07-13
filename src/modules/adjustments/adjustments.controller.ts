@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateAdjustmentDto } from './dto/adjustments.dto';
+import { CreateAdjustmentDto, TransferStockDto } from './dto/adjustments.dto';
 import { AdjustmentsService } from './adjustments.service';
 
 @Controller('adjustments')
@@ -12,6 +12,11 @@ export class AdjustmentsController {
   @Get()
   findAll(@Query() q: PaginationQueryDto, @Query('warehouseId') warehouseId?: string) {
     return this.service.findAll(q, warehouseId);
+  }
+
+  @Post('transfer')
+  transfer(@Body() dto: TransferStockDto) {
+    return this.service.transfer(dto);
   }
 
   @Post()
