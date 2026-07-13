@@ -36,8 +36,8 @@ export class InvoicesRepository {
     });
   }
 
-  async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; isSale: boolean; createdById?: number }) {
-    const { total, paid, isSale, createdById } = computed;
+  async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; discount: number; isSale: boolean; createdById?: number }) {
+    const { total, paid, discount, isSale, createdById } = computed;
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
@@ -70,6 +70,7 @@ export class InvoicesRepository {
           partyId: party.id,
           warehouseId: warehouse.id,
           paid,
+          discount,
           treasuryId: treasury?.id ?? null,
           note: dto.note,
           commissionAmount: dto.commissionAmount ?? null,
@@ -84,15 +85,15 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      const txns = this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
     });
   }
 
-  async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number; createdById?: number }) {
-    const { total, paid, createdById } = computed;
+  async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number; discount: number; createdById?: number }) {
+    const { total, paid, discount, createdById } = computed;
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
@@ -128,6 +129,7 @@ export class InvoicesRepository {
           partyId: party.id,
           warehouseId: warehouse.id,
           paid,
+          discount,
           treasuryId: treasury?.id ?? null,
           note: dto.note ?? null,
           commissionAmount: dto.commissionAmount ?? null,
@@ -143,7 +145,7 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      const txns = this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invId }, include: INVOICE_INCLUDE });
@@ -203,17 +205,20 @@ export class InvoicesRepository {
     p: {
       party: { id: number }; treasury: { id: number } | null;
       commissionParty: { id: number; name: string } | null;
-      date: Date; no: string; total: number; paid: number; isSale: boolean;
+      date: Date; no: string; total: number; paid: number; discount: number; isSale: boolean;
       dto: CreateInvoiceDto | UpdateInvoiceDto; createdById?: number; exchangeRate?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { party, treasury, commissionParty, date, no, total, paid, isSale, dto, createdById, exchangeRate } = p;
+    const { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate } = p;
+    // The party owes/us the invoice total minus any discount.
+    const net = total - (discount || 0);
+    const discNote = discount > 0 ? ` (بعد خصم ${discount})` : '';
     const txns: Prisma.TransactionCreateManyInput[] = [];
     if (isSale) {
-      txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: total, note: `فاتورة بيع #${no}`, invoiceId });
+      txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: net, note: `فاتورة بيع #${no}${discNote}`, invoiceId });
       if (paid > 0) txns.push({ date, type: 'تحصيل', partyId: party.id, treasuryId: treasury?.id ?? null, credit: paid, cashIn: paid, note: `محصّل مع فاتورة #${no}`, invoiceId });
     } else {
-      txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: total, note: `فاتورة شراء #${no}`, invoiceId });
+      txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: net, note: `فاتورة شراء #${no}${discNote}`, invoiceId });
       if (paid > 0) txns.push({ date, type: 'دفعة لمورد', partyId: party.id, treasuryId: treasury?.id ?? null, debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${no}`, invoiceId });
       if (dto.commissionAmount && dto.commissionAmount > 0 && commissionParty) {
         txns.push({ date, type: 'commission', partyId: commissionParty.id, credit: dto.commissionAmount, note: `عمولة فاتورة #${no}`, invoiceId });

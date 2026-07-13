@@ -19,14 +19,16 @@ export class InvoicesService {
   create(dto: CreateInvoiceDto, createdById?: number) {
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid || 0;
+    const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
     const isSale = dto.kind === InvoiceKind.SALE;
-    return this.repo.create(dto, { total, paid, isSale, createdById });
+    return this.repo.create(dto, { total, paid, discount, isSale, createdById });
   }
 
   update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid ?? 0;
-    return this.repo.update(id, dto, { total, paid, createdById });
+    const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
+    return this.repo.update(id, dto, { total, paid, discount, createdById });
   }
 
   updateCommission(uid: string, dto: CommissionDto) { return this.repo.updateCommission(uid, dto); }

@@ -21,6 +21,7 @@ export class CreateInvoiceDto {
   items: InvoiceItemDto[];
 
   @IsOptional() @IsNumber() paid?: number;
+  @IsOptional() @IsNumber() discount?: number;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
   // EGP-per-USD rate for a dollar (USD) invoice; omitted for EGP invoices
@@ -40,6 +41,7 @@ export class UpdateInvoiceDto {
   items: InvoiceItemDto[];
 
   @IsOptional() @IsNumber() paid?: number;
+  @IsOptional() @IsNumber() discount?: number;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsNumber() exchangeRate?: number;

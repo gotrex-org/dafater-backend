@@ -352,6 +352,8 @@ model Invoice {
   exchangeRate Float?
 
   paid       Float            @default(0)
+  // خصم على الفاتورة — يقلّل صافي المبلغ المستحق على/للطرف (الصافي = إجمالي الأصناف − الخصم)
+  discount   Float            @default(0)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
   treasuryId Int?
 
