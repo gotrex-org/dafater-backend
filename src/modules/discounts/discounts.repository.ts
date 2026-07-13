@@ -37,6 +37,8 @@ export class DiscountsRepository {
       data: {
         amount: dto.amount ?? 0,
         percent: dto.percent ?? 0,
+        cartons: dto.cartons ?? 0,
+        cartonPrice: dto.cartonPrice ?? 0,
         recurrence: dto.recurrence,
         startDate: new Date(dto.startDate),
         note: dto.note ?? null,
@@ -74,7 +76,9 @@ export class DiscountsRepository {
         const key = occ.toISOString().slice(0, 10);
         if (lastKey && key <= lastKey) continue; // already applied
         let amount = s.amount;
-        if (s.percent > 0) {
+        if (s.cartons > 0) {
+          amount = s.cartons * s.cartonPrice;
+        } else if (s.percent > 0) {
           const prev = new Date(occ);
           prev.setMonth(prev.getMonth() - step);
           const base = await this.purchasesFrom(s.partyId, prev, occ);
@@ -125,7 +129,17 @@ export class DiscountsRepository {
   }
 
   async create(dto: CreateDiscountDto, createdById?: number) {
-    const amount = dto.amount;
+    // Resolve the discount value: cash amount, cartons×price, or % of this month's purchases.
+    const base = await this.prisma.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true } });
+    let amount = dto.amount ?? 0;
+    if (dto.percent && dto.percent > 0) {
+      const now = new Date();
+      const from = new Date(now.getFullYear(), now.getMonth(), 1);
+      const to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      amount = ((await this.purchasesFrom(base.id, from, to)) * dto.percent) / 100;
+    } else if (dto.cartons && dto.cartons > 0) {
+      amount = dto.cartons * (dto.cartonPrice ?? 0);
+    }
     return this.prisma.$transaction(async (tx) => {
       const party = await tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, name: true, role: true } });
       const discount = await tx.discount.create({

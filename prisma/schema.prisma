@@ -483,6 +483,8 @@ model DiscountSchedule {
   partyId     Int
   amount      Float              @default(0) // مبلغ ثابت
   percent     Float              @default(0) // نسبة % من مشتريات الفترة (تُستخدم لو > 0)
+  cartons     Float              @default(0) // عدد كراتين (تُستخدم لو > 0)
+  cartonPrice Float              @default(0) // سعر الكرتونة (مع cartons)
   recurrence  DiscountRecurrence
   startDate   DateTime           // أول ميعاد ومنه يتكرّر
   note        String?
