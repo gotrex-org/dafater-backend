@@ -19,7 +19,7 @@ export class ReportsService {
   private saleInvoices(from?: string, to?: string) {
     const date = this.range(from, to);
     return this.prisma.invoice.findMany({
-      where: { kind: InvoiceKind.SALE, ...(date ? { date } : {}) },
+      where: { kind: InvoiceKind.SALE, fake: false, ...(date ? { date } : {}) },
       select: { date: true, party: { select: { uid: true, name: true } }, items: { select: { qty: true, price: true, product: { select: { uid: true, name: true, unit: true } } } } },
     });
   }
@@ -47,7 +47,7 @@ export class ReportsService {
   async topParties(kind: InvoiceKind, from?: string, to?: string, limit = 20) {
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
-      where: { kind, ...(date ? { date } : {}) },
+      where: { kind, fake: false, ...(date ? { date } : {}) },
       select: { party: { select: { uid: true, name: true } }, items: { select: { qty: true, price: true } } },
     });
     const byParty = new Map<string, { name: string; total: number; count: number }>();
@@ -116,7 +116,7 @@ export class ReportsService {
   async summary(from?: string, to?: string) {
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
-      where: date ? { date } : {},
+      where: { fake: false, ...(date ? { date } : {}) },
       select: { kind: true, items: { select: { qty: true, price: true } } },
     });
     let sales = 0, purchases = 0, salesCount = 0, purchasesCount = 0;

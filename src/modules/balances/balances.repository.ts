@@ -89,7 +89,7 @@ export class BalancesRepository {
 
   async stockOf(productId: number, warehouseId: number): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
-      where: { productId, invoice: { warehouseId } },
+      where: { productId, invoice: { warehouseId, fake: false } },
       select: { qty: true, invoice: { select: { kind: true } } },
     });
     let qty = 0;
@@ -119,7 +119,7 @@ export class BalancesRepository {
 
   async avgCost(productId: number): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
-      where: { productId, invoice: { kind: 'PURCHASE' } },
+      where: { productId, invoice: { kind: 'PURCHASE', fake: false } },
       select: { qty: true, price: true },
     });
     let totalQty = 0;

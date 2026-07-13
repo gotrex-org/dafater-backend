@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsEnum, IsNumber, IsOptional, IsString, ValidateNested, IsDateString,
+  IsArray, IsBoolean, IsEnum, IsNumber, IsOptional, IsString, ValidateNested, IsDateString,
 } from 'class-validator';
 import { InvoiceKind } from '@prisma/client';
 
@@ -22,6 +22,7 @@ export class CreateInvoiceDto {
 
   @IsOptional() @IsNumber() paid?: number;
   @IsOptional() @IsNumber() discount?: number;
+  @IsOptional() @IsBoolean() fake?: boolean;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
   // EGP-per-USD rate for a dollar (USD) invoice; omitted for EGP invoices
@@ -42,6 +43,7 @@ export class UpdateInvoiceDto {
 
   @IsOptional() @IsNumber() paid?: number;
   @IsOptional() @IsNumber() discount?: number;
+  @IsOptional() @IsBoolean() fake?: boolean;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsNumber() exchangeRate?: number;

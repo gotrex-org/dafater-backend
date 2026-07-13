@@ -358,6 +358,8 @@ model Invoice {
   paid       Float            @default(0)
   // خصم على الفاتورة — يقلّل صافي المبلغ المستحق على/للطرف (الصافي = إجمالي الأصناف − الخصم)
   discount   Float            @default(0)
+  // فاتورة وهمية: مستند فقط — لا تؤثّر على رصيد الطرف ولا الخزنة ولا المخزن ولا التقارير
+  fake       Boolean          @default(false)
   treasury   TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
   treasuryId Int?
 

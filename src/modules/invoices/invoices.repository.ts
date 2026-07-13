@@ -71,6 +71,7 @@ export class InvoicesRepository {
           warehouseId: warehouse.id,
           paid,
           discount,
+          fake: !!dto.fake,
           treasuryId: treasury?.id ?? null,
           note: dto.note,
           commissionAmount: dto.commissionAmount ?? null,
@@ -85,7 +86,8 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      // Fake invoice = document only: no ledger/treasury movements at all.
+      const txns = dto.fake ? [] : this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
@@ -130,6 +132,7 @@ export class InvoicesRepository {
           warehouseId: warehouse.id,
           paid,
           discount,
+          fake: !!dto.fake,
           treasuryId: treasury?.id ?? null,
           note: dto.note ?? null,
           commissionAmount: dto.commissionAmount ?? null,
@@ -145,7 +148,7 @@ export class InvoicesRepository {
         },
       });
 
-      const txns = this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      const txns = dto.fake ? [] : this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invId }, include: INVOICE_INCLUDE });
