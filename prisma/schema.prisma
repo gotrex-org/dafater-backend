@@ -74,6 +74,13 @@ enum ReminderRecurrence {
   ONCE    // مرة واحدة في تاريخ محدّد
 }
 
+// بنود مالية خاصة بالمالك فقط
+enum OwnerEntryKind {
+  PERSONAL_EXPENSE // مصروف شخصي
+  COMPANY_PAYMENT  // دفعة شهرية للشركة
+  CLIENT_PAYMENT   // دفعة شهرية لعميل
+}
+
 // ----------------------------- auth -----------------------------
 
 model User {
@@ -103,8 +110,28 @@ model User {
   partyId      Int?
   createdTransactions Transaction[]
   reminders           Reminder[]
+  ownerEntries        OwnerEntry[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// A private financial entry visible only to its owner (the primary account): personal
+// expenses, and monthly payments to my company / to clients — with an optional discount.
+model OwnerEntry {
+  id        Int            @id @default(autoincrement())
+  uid       String         @unique @default(cuid())
+  kind      OwnerEntryKind
+  title     String
+  amount    Float          @default(0)
+  discount  Float          @default(0) // خصم (من الشركات) — الصافي = amount - discount
+  date      DateTime
+  note      String?
+  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId   Int
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([ownerId])
 }
 
 // Personal reminders private to their owner (each user sees only their own): monthly

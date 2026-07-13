@@ -141,4 +141,23 @@ export class ReportsService {
       grossProfit: (sales - salesReturns) - (purchases - purchaseReturns),
     };
   }
+
+  // ربح وخسارة — revenue vs. cost vs. expenses for the period.
+  async profitLoss(from?: string, to?: string) {
+    const s = await this.summary(from, to);
+    const date = this.range(from, to);
+    const exp = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف', ...(date ? { date } : {}) },
+      _sum: { cashOut: true },
+    });
+    const expenses = exp._sum.cashOut || 0;
+    const netCost = s.purchases - s.purchaseReturns;
+    return {
+      revenue: s.netSales,       // net sales
+      cost: netCost,             // net purchases (تكلفة تقديرية)
+      grossProfit: s.grossProfit,
+      expenses,                  // مصاريف تشغيلية
+      netProfit: s.grossProfit - expenses,
+    };
+  }
 }

@@ -1,10 +1,11 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client';
-import { Permissions } from '../../common/decorators/permissions.decorator';
+import { PrimaryGuard } from '../../auth/guards/primary.guard';
 import { ReportsService } from './reports.service';
 
+// Reports are private to the owner (primary) account only.
 @Controller('reports')
-@Permissions('reports')
+@UseGuards(PrimaryGuard)
 export class ReportsController {
   constructor(private service: ReportsService) {}
 
@@ -36,5 +37,10 @@ export class ReportsController {
   @Get('inactive-clients')
   inactiveClients(@Query('days') days?: string) {
     return this.service.inactiveClients(days ? Number(days) : 45);
+  }
+
+  @Get('profit-loss')
+  profitLoss(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.service.profitLoss(from, to);
   }
 }
