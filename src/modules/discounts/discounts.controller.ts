@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/commo
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateDiscountDto } from './dto/discounts.dto';
+import { CreateDiscountDto, CreateDiscountScheduleDto } from './dto/discounts.dto';
 import { DiscountsService } from './discounts.service';
 
 // Discounts live under the invoices permission — a section within الفواتير.
@@ -14,6 +14,22 @@ export class DiscountsController {
   @Get()
   findAll(@Query() q: PaginationQueryDto) {
     return this.service.findAll(q);
+  }
+
+  @Get('schedules')
+  listSchedules() {
+    return this.service.listSchedules();
+  }
+
+  @Post('schedules')
+  createSchedule(@Body() dto: CreateDiscountScheduleDto) {
+    return this.service.createSchedule(dto);
+  }
+
+  @Delete('schedules/:id')
+  @Permissions('invoices.delete')
+  removeSchedule(@Param('id') id: string) {
+    return this.service.removeSchedule(id);
   }
 
   @Post()

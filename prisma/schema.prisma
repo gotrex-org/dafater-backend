@@ -183,6 +183,7 @@ model Party {
   invoices         Invoice[]
   returns          Return[]
   discounts        Discount[]
+  discountSchedules DiscountSchedule[]
   dealsAsClient    Deal[]   @relation("DealClient")
   dealsAsSupplier  Deal[]   @relation("DealSupplier")
   requests         Request[]
@@ -457,8 +458,38 @@ model Discount {
   partyId   Int
   amount    Float    @default(0)
   note      String?
+  // set when this discount was auto-generated from a recurring schedule
+  schedule   DiscountSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  scheduleId Int?
   transactions Transaction[]
   createdAt DateTime @default(now())
+
+  @@index([partyId])
+}
+
+enum DiscountRecurrence {
+  MONTHLY   // كل شهر
+  QUARTERLY // كل 3 شهور
+  YEARLY    // كل سنة
+}
+
+// A recurring discount for a company (party): applied automatically on each occurrence
+// (starting from startDate, then +1 period each time). Either a fixed amount, or a
+// percentage of the party's net purchases during the elapsed period.
+model DiscountSchedule {
+  id          Int                @id @default(autoincrement())
+  uid         String             @unique @default(cuid())
+  party       Party              @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyId     Int
+  amount      Float              @default(0) // مبلغ ثابت
+  percent     Float              @default(0) // نسبة % من مشتريات الفترة (تُستخدم لو > 0)
+  recurrence  DiscountRecurrence
+  startDate   DateTime           // أول ميعاد ومنه يتكرّر
+  note        String?
+  active      Boolean            @default(true)
+  lastApplied String? // مفتاح آخر مناسبة اتطبّقت (تاريخ الـ occurrence)
+  discounts   Discount[]
+  createdAt   DateTime           @default(now())
 
   @@index([partyId])
 }
