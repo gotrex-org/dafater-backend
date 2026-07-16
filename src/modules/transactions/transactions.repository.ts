@@ -5,7 +5,7 @@ import { paginate } from '../../common/pagination';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 import { UpdateTransactionDto } from './dto/transactions.dto';
 
-const TXN_INCLUDE = { party: true, treasury: true, treasury2: true, category: true, invoice: { select: { uid: true } }, deal: { select: { uid: true } }, createdBy: { select: { name: true } } } as const;
+const TXN_INCLUDE = { party: true, treasury: true, treasury2: true, category: true, warehouse: { select: { name: true, uid: true } }, invoice: { select: { uid: true } }, deal: { select: { uid: true } }, createdBy: { select: { name: true } } } as const;
 
 @Injectable()
 export class TransactionsRepository {

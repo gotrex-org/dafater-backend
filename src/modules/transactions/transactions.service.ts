@@ -98,6 +98,101 @@ export class TransactionsService {
         return expTx;
       }
 
+      case EntryType.CASH: {
+        // صرف وتوريد نقدية موحّد: اتجاه (صرف/توريد) + جهة (عميل/مورد/مخزن/بضاعة/تسوية/حساب)
+        const dir = dto.cashDir === 'in' ? 'in' : 'out';
+        const target = dto.cashTarget || 'settlement';
+        const isOut = dir === 'out';
+        // تسوية الحساب بتعدّل رصيد الطرف بس من غير خزينة — باقي الجهات لازمها خزينة.
+        if (target !== 'account') this.requirePart(dto.treasuryId, 'الخزينة');
+        const dirWord = isOut ? 'صرف' : 'توريد';
+        // أثر الخزينة: صرف = خروج نقدية، توريد = دخول نقدية
+        const treasuryLeg = isOut ? { cashOut: amt } : { cashIn: amt };
+        // أثر الطرف (لو عميل/مورد): صرف = عليه (debit)، توريد = له (credit)
+        const partyLeg = isOut ? { debit: amt } : { credit: amt };
+
+        if (target === 'account') {
+          // تسوية حساب — تعديل رصيد الطرف فقط (له/عليه) بدون تحريك الخزينة.
+          this.requirePart(dto.partyId, 'الحساب');
+          const tx = await this.repo.create({
+            ...eb, date, type: 'تسوية',
+            party: { connect: { uid: dto.partyId } },
+            ...partyLeg, note: dto.note,
+          });
+          const dirTxt = isOut ? 'عليه' : 'له';
+          this.logTxn(user, 'CREATE', tx.uid, `تسوية ${dirTxt} ${amt} ج على حساب ${tx.party?.name ?? ''}`);
+          return tx;
+        }
+
+        if (target === 'custody') {
+          // عهدة — فلوس مع شخص (موظف أو أي حد). صرف = يديله عهدة (عليه) + خروج من الخزينة،
+          // توريد = رد العهدة (له) + دخول للخزينة. الشخص طرف بدور PERSON (يتعمل تلقائي بالاسم).
+          const person = await this.resolvePerson(dto);
+          const tx = await this.repo.create({
+            ...eb, date, type: isOut ? 'عهدة' : 'رد عهدة',
+            party: { connect: { uid: person.uid } },
+            treasury: { connect: { uid: dto.treasuryId } },
+            ...treasuryLeg, ...partyLeg, note: dto.note,
+          });
+          this.logTxn(user, 'CREATE', tx.uid,
+            `${isOut ? 'صرف عهدة' : 'رد عهدة'} ${amt} ج ${isOut ? 'إلى' : 'من'} ${person.name} ${isOut ? 'من' : 'إلى'} خزينة ${tx.treasury?.name ?? ''}`);
+          return tx;
+        }
+
+        if (target === 'client' || target === 'supplier') {
+          this.requirePart(dto.partyId, target === 'client' ? 'العميل' : 'المورد');
+          const type = `${dirWord} نقدية ${target === 'client' ? 'لعميل' : 'لمورد'}`;
+          const tx = await this.repo.create({
+            ...eb, date, type,
+            party: { connect: { uid: dto.partyId } },
+            treasury: { connect: { uid: dto.treasuryId } },
+            ...treasuryLeg, ...partyLeg, note: dto.note,
+          });
+          this.logTxn(user, 'CREATE', tx.uid,
+            `${dirWord} ${amt} ج ${isOut ? 'إلى' : 'من'} ${tx.party?.name ?? ''} ${isOut ? 'من' : 'إلى'} خزينة ${tx.treasury?.name ?? ''}`);
+          return tx;
+        }
+
+        if (target === 'warehouse') {
+          this.requirePart(dto.warehouseId, 'المخزن');
+          const tx = await this.repo.create({
+            ...eb, date, type: 'مصروف مخزن',
+            warehouse: { connect: { uid: dto.warehouseId } },
+            category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
+            treasury: { connect: { uid: dto.treasuryId } },
+            ...treasuryLeg, note: dto.note,
+          });
+          const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
+          this.logTxn(user, 'CREATE', tx.uid,
+            `${dirWord} مصروف مخزن ${amt} ج — ${tx.warehouse?.name ?? ''}${catNote} من خزينة ${tx.treasury?.name ?? ''}`);
+          return tx;
+        }
+
+        if (target === 'goods') {
+          const tx = await this.repo.create({
+            ...eb, date, type: 'مصروف بضاعة',
+            warehouse: dto.warehouseId ? { connect: { uid: dto.warehouseId } } : undefined,
+            treasury: { connect: { uid: dto.treasuryId } },
+            ...treasuryLeg, note: dto.note,
+          });
+          // صرف يرفع صافي التكلفة (+)، توريد/استرداد يقلّلها (−).
+          const spread = await this.distributeGoodsCost(dto, amt, isOut ? 1 : -1).catch(() => '');
+          this.logTxn(user, 'CREATE', tx.uid,
+            `${dirWord} مصروف بضاعة ${amt} ج${spread ? ` (${spread})` : ''} من خزينة ${tx.treasury?.name ?? ''}`);
+          return tx;
+        }
+
+        // تسوية نقدية: تتخصم من إجمالي التقارير والربح
+        const tx = await this.repo.create({
+          ...eb, date, type: 'تسوية نقدية',
+          treasury: { connect: { uid: dto.treasuryId } },
+          ...treasuryLeg, note: dto.note,
+        });
+        this.logTxn(user, 'CREATE', tx.uid,
+          `تسوية نقدية (${dirWord}) ${amt} ج من خزينة ${tx.treasury?.name ?? ''}`);
+        return tx;
+      }
+
       case EntryType.TRANSFER: {
         this.requirePart(dto.treasuryId, 'من حساب');
         this.requirePart(dto.treasuryId2, 'إلى حساب');
@@ -219,8 +314,59 @@ export class TransactionsService {
 
   remove(id: string) { return this.repo.remove(id); }
 
+  // صرف نقدية على بضاعة — يوزّع المبلغ على بنود شراء الأصناف المختارة عن طريق زيادة
+  // "الناولون" (freight) بتاعها، وده بيرفع صافي سعر التكلفة (avgCost) للأصناف دي.
+  // بيرجّع وصف مختصر للتوزيع (للـ audit). لا يؤثر على رصيد الطرف ولا إجمالي الفاتورة.
+  private async distributeGoodsCost(dto: PostEntryDto, amt: number, sign: number): Promise<string> {
+    const mode = dto.goodsMode;
+    const targets: { itemId: number; weight: number }[] = [];
+    let summary = '';
+
+    if (mode === 'invoices' && dto.invoiceIds?.length) {
+      const items = await this.prisma.invoiceItem.findMany({
+        where: { invoice: { uid: { in: dto.invoiceIds }, kind: 'PURCHASE', fake: false } },
+        select: { id: true, qty: true },
+      });
+      for (const it of items) targets.push({ itemId: it.id, weight: it.qty > 0 ? it.qty : 1 });
+      summary = `موزّع على ${dto.invoiceIds.length} فاتورة`;
+    } else if ((mode === 'products' || mode === 'count') && dto.goodsItems?.length) {
+      for (const gi of dto.goodsItems) {
+        if (!gi?.productId) continue;
+        // آخر بند شراء للصنف — avgCost بيجمع الناولون على كل البنود فمكانه مش فارق.
+        const item = await this.prisma.invoiceItem.findFirst({
+          where: { product: { uid: gi.productId }, invoice: { kind: 'PURCHASE', fake: false } },
+          orderBy: { invoice: { date: 'desc' } },
+          select: { id: true },
+        });
+        if (item) targets.push({ itemId: item.id, weight: mode === 'count' ? (gi.count && gi.count > 0 ? gi.count : 1) : 1 });
+      }
+      summary = `موزّع على ${targets.length} صنف`;
+    }
+
+    const totalWeight = targets.reduce((s, t) => s + t.weight, 0);
+    if (totalWeight <= 0) return summary;
+    for (const t of targets) {
+      const share = amt * (t.weight / totalWeight) * sign;
+      await this.prisma.invoiceItem.update({ where: { id: t.itemId }, data: { freight: { increment: share } } });
+    }
+    return summary;
+  }
+
   private requirePart(value: string | undefined, label: string) {
     if (!value) throw new BadRequestException(`اختر ${label}`);
+  }
+
+  // صاحب العهدة — طرف بدور PERSON. لو اتبعت partyId نستخدمه، وإلا نلاقي الاسم أو نعمله جديد.
+  private async resolvePerson(dto: PostEntryDto): Promise<{ uid: string; name: string }> {
+    if (dto.partyId) {
+      const p = await this.prisma.party.findUnique({ where: { uid: dto.partyId }, select: { uid: true, name: true } });
+      if (p) return p;
+    }
+    const name = (dto.holderName || '').trim();
+    if (!name) throw new BadRequestException('اكتب اسم صاحب العهدة');
+    const existing = await this.prisma.party.findFirst({ where: { name, role: 'PERSON' }, select: { uid: true, name: true } });
+    if (existing) return existing;
+    return this.prisma.party.create({ data: { name, role: 'PERSON' }, select: { uid: true, name: true } });
   }
 
   private requireTreasuryAllowed(treasuryUid: string | undefined, user?: any) {

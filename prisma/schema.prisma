@@ -31,6 +31,7 @@ enum PartyRole {
   CLIENT
   SUPPLIER
   AGENT // صاحب عمولة
+  PERSON // صاحب عهدة (موظف أو أي شخص شايل فلوس أمانة/سلف)
 }
 
 enum PartyType {
@@ -211,6 +212,7 @@ model TreasuryAccount {
   invoices          Invoice[]
   deals             Deal[]
   returns           Return[]
+  expenseSchedules  WarehouseExpenseSchedule[]
   dollarTxs         DollarAgentTx[]
 
   createdAt DateTime @default(now())
@@ -225,6 +227,8 @@ model Warehouse {
   invoices    Invoice[]
   adjustments Adjustment[]
   returns     Return[]
+  transactions Transaction[] @relation("TxWarehouse")
+  expenseSchedules WarehouseExpenseSchedule[]
   loans       Loan[]
 
   createdAt DateTime @default(now())
@@ -266,9 +270,30 @@ model ExpenseCategory {
   addsToGoods Boolean @default(false)
 
   transactions Transaction[]
+  expenseSchedules WarehouseExpenseSchedule[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// مصروف مخزن ثابت شهري (إيجار/مرتبات) — بيتخصم أوتوماتيك كل شهر من الخزنة المحدّدة
+model WarehouseExpenseSchedule {
+  id          Int              @id @default(autoincrement())
+  uid         String           @unique @default(cuid())
+  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  warehouseId Int
+  treasury    TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId  Int?
+  category    ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  categoryId  Int?
+  title       String
+  amount      Float            @default(0)
+  dayOfMonth  Int              @default(1)
+  active      Boolean          @default(true)
+  lastApplied String? // "YYYY-MM" لآخر شهر اتطبّق
+  createdAt   DateTime         @default(now())
+
+  @@index([warehouseId])
 }
 
 // ------------------------- ledger / treasury -------------------------
@@ -320,6 +345,10 @@ model Transaction {
 
   discount   Discount? @relation(fields: [discountId], references: [id], onDelete: Cascade)
   discountId Int?
+
+  // مصروف مخزن مرتبط بمخزن معيّن (إيجار/مرتبات/تحميل/ناولون/تخليص)
+  warehouse   Warehouse? @relation("TxWarehouse", fields: [warehouseId], references: [id], onDelete: SetNull)
+  warehouseId Int?
 
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?

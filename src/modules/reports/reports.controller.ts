@@ -43,4 +43,14 @@ export class ReportsController {
   profitLoss(@Query('from') from?: string, @Query('to') to?: string) {
     return this.service.profitLoss(from, to);
   }
+
+  @Get('warehouse-expenses')
+  warehouseExpenses(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.service.warehouseExpenses(from, to);
+  }
+
+  @Get('custody-balances')
+  custodyBalances() {
+    return this.service.custodyBalances();
+  }
 }

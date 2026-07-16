@@ -147,16 +147,38 @@ export class ReportsService {
   async profitLoss(from?: string, to?: string) {
     const s = await this.summary(from, to);
     const date = this.range(from, to);
+    // كل حركة صرف/توريد بتأثر بالصافي: صرف (cashOut) − توريد (cashIn).
+    const net = (agg: { _sum: { cashOut: number | null; cashIn: number | null } }) =>
+      (agg._sum.cashOut || 0) - (agg._sum.cashIn || 0);
+
     const opAgg = await this.prisma.transaction.aggregate({
       where: { type: 'مصروف', ...(date ? { date } : {}), OR: [{ categoryId: null }, { category: { addsToGoods: false } }] },
-      _sum: { cashOut: true },
+      _sum: { cashOut: true, cashIn: true },
     });
     const goodsAgg = await this.prisma.transaction.aggregate({
       where: { type: 'مصروف', ...(date ? { date } : {}), category: { addsToGoods: true } },
-      _sum: { cashOut: true },
+      _sum: { cashOut: true, cashIn: true },
     });
-    const expenses = opAgg._sum.cashOut || 0;       // مصاريف تشغيلية
-    const goodsExpenses = goodsAgg._sum.cashOut || 0; // مصاريف على البضاعة
+    // مصاريف المخزن (إيجار/مرتبات/تحميل/تخليص) — تشغيلية
+    const whAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    // مصاريف بضاعة نقدية — تتضاف على التكلفة
+    const goodsCashAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف بضاعة', ...(date ? { date } : {}) },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    // تسوية نقدية — تتخصم من الصافي في الآخر
+    const settleAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'تسوية نقدية', ...(date ? { date } : {}) },
+      _sum: { cashOut: true, cashIn: true },
+    });
+
+    const warehouseExpenses = net(whAgg);
+    const expenses = net(opAgg) + warehouseExpenses;   // مصاريف تشغيلية (شخصية + مخزن)
+    const goodsExpenses = net(goodsAgg) + net(goodsCashAgg); // مصاريف على البضاعة
+    const settlement = net(settleAgg);                 // تسويات نقدية
     const revenue = s.netSales;
     const cost = (s.purchases - s.purchaseReturns) + goodsExpenses;
     const grossProfit = revenue - cost;
@@ -165,8 +187,60 @@ export class ReportsService {
       cost,             // net purchases + مصاريف البضاعة
       goodsExpenses,
       grossProfit,
-      expenses,         // مصاريف تشغيلية فقط
-      netProfit: grossProfit - expenses,
+      expenses,         // مصاريف تشغيلية (شخصية + مخزن)
+      warehouseExpenses, // مصاريف المخزن لوحدها (جزء من expenses)
+      settlement,       // تسويات نقدية
+      netProfit: grossProfit - expenses - settlement,
     };
+  }
+
+  // أرصدة العُهَد — كل شخص (PERSON) شايل فلوس عهدة/أمانة وكام لسه عليه.
+  async custodyBalances() {
+    const persons = await this.prisma.party.findMany({
+      where: { role: 'PERSON' },
+      select: { id: true, uid: true, name: true, opening: true },
+    });
+    if (!persons.length) return { total: 0, holders: [] };
+    const agg = await this.prisma.transaction.groupBy({
+      by: ['partyId'],
+      _sum: { debit: true, credit: true },
+      where: { partyId: { in: persons.map((p) => p.id) } },
+    });
+    const byId = new Map(agg.map((a) => [a.partyId, (a._sum.debit || 0) - (a._sum.credit || 0)]));
+    const holders = persons
+      .map((p) => ({ id: p.uid, name: p.name, balance: (p.opening || 0) + (byId.get(p.id) || 0) }))
+      .filter((h) => Math.abs(h.balance) > 0.001)
+      .sort((a, b) => b.balance - a.balance);
+    const total = holders.reduce((s, h) => s + h.balance, 0);
+    return { total, holders };
+  }
+
+  // مصاريف المخزن — تفصيل مصاريف كل مخزن (إيجار/مرتبات/تحميل/تخليص...) خلال الفترة.
+  async warehouseExpenses(from?: string, to?: string) {
+    const date = this.range(from, to);
+    const rows = await this.prisma.transaction.findMany({
+      where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
+      select: {
+        date: true, cashOut: true, cashIn: true, note: true,
+        warehouse: { select: { uid: true, name: true } },
+        category: { select: { name: true } },
+      },
+      orderBy: { date: 'desc' },
+    });
+    const byWarehouse = new Map<string, { name: string; total: number; byCategory: Map<string, number> }>();
+    for (const r of rows) {
+      const key = r.warehouse?.uid ?? '—';
+      const amt = (Number(r.cashOut) || 0) - (Number(r.cashIn) || 0);
+      const cur = byWarehouse.get(key) ?? { name: r.warehouse?.name ?? '—', total: 0, byCategory: new Map() };
+      cur.total += amt;
+      const cat = r.category?.name ?? 'أخرى';
+      cur.byCategory.set(cat, (cur.byCategory.get(cat) ?? 0) + amt);
+      byWarehouse.set(key, cur);
+    }
+    const warehouses = [...byWarehouse.entries()]
+      .map(([id, v]) => ({ id, name: v.name, total: v.total, categories: [...v.byCategory.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total) }))
+      .sort((a, b) => b.total - a.total);
+    const total = warehouses.reduce((sm, w) => sm + w.total, 0);
+    return { total, warehouses };
   }
 }
