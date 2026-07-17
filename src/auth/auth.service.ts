@@ -11,6 +11,12 @@ export class AuthService {
     private jwt: JwtService,
   ) {}
 
+  // نبضة "أونلاين" — بيحدّث آخر ظهور للمستخدم الحالي (بينده كل دقيقة من الواجهة).
+  async heartbeat(uid: string) {
+    await this.prisma.user.update({ where: { uid }, data: { lastSeenAt: new Date() } }).catch(() => undefined);
+    return { ok: true };
+  }
+
   async listLoginUsers() {
     const users = await this.prisma.user.findMany({
       select: { uid: true, name: true, admin: true },
@@ -26,6 +32,8 @@ export class AuthService {
     });
     const ok = user && await bcrypt.compare(dto.password, user.pinHash);
     if (!user || !ok) throw new UnauthorizedException('اسم المستخدم أو كلمة المرور غير صحيحة');
+
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastSeenAt: new Date() } }).catch(() => undefined);
 
     const token = await this.jwt.signAsync({
       sub: user.uid,

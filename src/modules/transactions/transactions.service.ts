@@ -22,7 +22,7 @@ export class TransactionsService {
     const amt = dto.amount;
     if (!amt || amt <= 0) throw new BadRequestException('المبلغ غير صحيح');
     this.requireTreasuryAllowed(dto.treasuryId, user);
-    this.requireTreasuryAllowed(dto.treasuryId2, user);
+    // الوجهة في التحويل (treasuryId2) مش لازم تكون ضمن خزائن المستخدم — يقدر يحوّل لأي خزينة.
     // `create()` calls below mix relation `connect` syntax (treasury/party/category), which forces
     // Prisma's "checked" input — raw FK scalars like `createdById` aren't valid there, only the
     // relation form. `createMany()` is the opposite: it only accepts flat scalars, no relations.
@@ -150,6 +150,21 @@ export class TransactionsService {
           });
           this.logTxn(user, 'CREATE', tx.uid,
             `${dirWord} ${amt} ج ${isOut ? 'إلى' : 'من'} ${tx.party?.name ?? ''} ${isOut ? 'من' : 'إلى'} خزينة ${tx.treasury?.name ?? ''}`);
+          return tx;
+        }
+
+        if (target === 'external') {
+          // مصروف خارجي — زي مصروف المخزن بس ببنود المجموعة الخارجية (من غير مخزن).
+          this.requirePart(dto.treasuryId, 'الخزينة');
+          const tx = await this.repo.create({
+            ...eb, date, type: 'مصروف',
+            category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
+            treasury: { connect: { uid: dto.treasuryId } },
+            ...treasuryLeg, note: dto.note,
+          });
+          const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
+          this.logTxn(user, 'CREATE', tx.uid,
+            `${dirWord} مصروف خارجي ${amt} ج${catNote} من خزينة ${tx.treasury?.name ?? ''}`);
           return tx;
         }
 

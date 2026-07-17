@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client'; // used by create()
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
@@ -16,7 +16,18 @@ export class InvoicesService {
     return inv;
   }
 
+  // ناولون/شاي بيتخصموا نقدًا — كل واحد لازمه خزينة (خاصة بيه أو خزينة الفاتورة).
+  private assertTreasuryForExtras(dto: CreateInvoiceDto | UpdateInvoiceDto) {
+    if (dto.fake) return;
+    const missingFreight = dto.items.some((it) => (it.freight ?? 0) > 0 && !it.freightTreasuryId && !dto.treasuryId);
+    const missingTea = dto.items.some((it) => (it.tea ?? 0) > 0 && !it.teaTreasuryId && !dto.treasuryId);
+    if (missingFreight || missingTea) {
+      throw new BadRequestException('اختر الخزنة اللي هيتخصم منها الناولون / الشاي');
+    }
+  }
+
   create(dto: CreateInvoiceDto, createdById?: number) {
+    this.assertTreasuryForExtras(dto);
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid || 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
@@ -25,6 +36,7 @@ export class InvoicesService {
   }
 
   update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
+    this.assertTreasuryForExtras(dto);
     const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
     const paid = dto.paid ?? 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;

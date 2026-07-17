@@ -19,6 +19,11 @@ export class TreasuryRepository {
     return this.prisma.treasuryAccount.findUnique({ where: { uid }, select: { id: true } });
   }
 
+  // كل الخزائن بالاسم فقط (من غير رصيد ولا تقييد) — لاختيار وجهة التحويل لأي خزينة.
+  allNames() {
+    return this.prisma.treasuryAccount.findMany({ select: { uid: true, name: true, currency: true }, orderBy: { name: 'asc' } });
+  }
+
   async movements(q: PaginationQueryDto, allowedUids?: string[]) {
     const cashCondition = {
       OR: [

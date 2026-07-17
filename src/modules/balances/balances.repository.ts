@@ -120,14 +120,14 @@ export class BalancesRepository {
   async avgCost(productId: number): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
       where: { productId, invoice: { kind: 'PURCHASE', fake: false } },
-      select: { qty: true, price: true, freight: true, commission: true },
+      select: { qty: true, price: true, freight: true, tea: true, commission: true },
     });
     let totalQty = 0;
     let totalAmt = 0;
     for (const it of items) {
       totalQty += it.qty;
-      // Landed cost: goods + freight (ناولون) + commission (عمولة) added to the item.
-      totalAmt += it.qty * it.price + (it.freight || 0) + (it.commission || 0);
+      // Landed cost: goods + freight (ناولون) + tea (شاي) + commission (عمولة) added to the item.
+      totalAmt += it.qty * it.price + (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
     }
     return totalQty > 0 ? totalAmt / totalQty : 0;
   }

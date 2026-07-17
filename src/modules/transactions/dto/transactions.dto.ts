@@ -14,7 +14,7 @@ export enum EntryType {
 }
 
 export type CashDir = 'out' | 'in'; // صرف / توريد
-export type CashTarget = 'client' | 'supplier' | 'warehouse' | 'goods' | 'settlement' | 'account' | 'custody';
+export type CashTarget = 'client' | 'supplier' | 'warehouse' | 'external' | 'goods' | 'settlement' | 'account' | 'custody';
 export type GoodsMode = 'invoices' | 'products' | 'count'; // توزيع صرف البضاعة
 export interface GoodsItem { productId: string; count?: number }
 
@@ -35,7 +35,7 @@ export class PostEntryDto {
   @IsOptional() @IsString() categoryId?: string;
   @IsOptional() @IsString() warehouseId?: string; // مصروف مخزن
   @IsOptional() @IsIn(['out', 'in']) cashDir?: CashDir;
-  @IsOptional() @IsIn(['client', 'supplier', 'warehouse', 'goods', 'settlement', 'account', 'custody']) cashTarget?: CashTarget;
+  @IsOptional() @IsIn(['client', 'supplier', 'warehouse', 'external', 'goods', 'settlement', 'account', 'custody']) cashTarget?: CashTarget;
   @IsOptional() @IsString() holderName?: string; // اسم صاحب العهدة (لو مش طرف موجود)
   // توزيع صرف البضاعة على تكلفة الأصناف (يرفع صافي السعر زي الناولون)
   @IsOptional() @IsIn(['invoices', 'products', 'count']) goodsMode?: GoodsMode;

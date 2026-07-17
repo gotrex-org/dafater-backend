@@ -8,8 +8,16 @@ export class InvoiceItemDto {
   @IsString() productId: string;
   @IsNumber() qty: number;
   @IsNumber() price: number;
-  @IsOptional() @IsNumber() freight?: number;    // ناولون على البند (شراء)
-  @IsOptional() @IsNumber() commission?: number; // عمولة على البند (شراء)
+  @IsOptional() @IsNumber() freight?: number; // ناولون — يُدفع من خزينة مختارة ويُضاف للتكلفة
+  @IsOptional() @IsString() freightTreasuryId?: string;
+  @IsOptional() @IsString() freightNote?: string;
+  @IsOptional() @IsNumber() tea?: number;     // شاي — يُدفع من خزينة مختارة ويُضاف للتكلفة
+  @IsOptional() @IsString() teaTreasuryId?: string;
+  @IsOptional() @IsString() teaNote?: string;
+  // عمولة البند = عدد × سعر، تترحّل لحساب صاحبها (commissionPartyId)
+  @IsOptional() @IsNumber() commissionQty?: number;
+  @IsOptional() @IsNumber() commissionPrice?: number;
+  @IsOptional() @IsString() commissionPartyId?: string;
 }
 
 export class CreateInvoiceDto {

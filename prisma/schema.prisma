@@ -107,6 +107,8 @@ model User {
   // Incremented to revoke all outstanding JWTs (e.g. on PIN change / forced logout)
   tokenVersion   Int      @default(0)
   role         UserRole @default(STAFF)
+  // آخر ظهور — بيتحدّث بنبضة كل دقيقة والتطبيق مفتوح، والدخول. يبان منه مين أونلاين وآخر فتح.
+  lastSeenAt   DateTime?
   party        Party?   @relation(fields: [partyId], references: [id])
   partyId      Int?
   createdTransactions Transaction[]
@@ -184,6 +186,8 @@ model Party {
   invoices         Invoice[]
   returns          Return[]
   discounts        Discount[]
+  itemCommissions  InvoiceItem[] @relation("ItemCommission")
+  dealItemCommissions DealItem[] @relation("DealItemCommission")
   discountSchedules DiscountSchedule[]
   dealsAsClient    Deal[]   @relation("DealClient")
   dealsAsSupplier  Deal[]   @relation("DealSupplier")
@@ -213,6 +217,10 @@ model TreasuryAccount {
   deals             Deal[]
   returns           Return[]
   expenseSchedules  WarehouseExpenseSchedule[]
+  itemFreightPayments InvoiceItem[] @relation("ItemFreightTreasury")
+  itemTeaPayments     InvoiceItem[] @relation("ItemTeaTreasury")
+  dealItemFreightPayments DealItem[] @relation("DealItemFreightTreasury")
+  dealItemTeaPayments     DealItem[] @relation("DealItemTeaTreasury")
   dollarTxs         DollarAgentTx[]
 
   createdAt DateTime @default(now())
@@ -262,10 +270,17 @@ model Product {
   updatedAt DateTime @updatedAt
 }
 
+enum ExpenseGroup {
+  WAREHOUSE // مصاريف مخزن
+  EXTERNAL  // مصاريف خارجية
+}
+
 model ExpenseCategory {
   id   Int    @id @default(autoincrement())
   uid  String @unique @default(cuid())
   name String
+  // البند تحت أي مجموعة رئيسية في تقرير المصاريف (مصاريف مخزن / مصاريف خارجية)
+  group ExpenseGroup @default(WAREHOUSE)
   // true = مصروف يُضاف على تكلفة البضاعة (زي الناولون والشاي)؛ false = مصروف تشغيلي (مرتبات/إيجار)
   addsToGoods Boolean @default(false)
 
@@ -280,8 +295,9 @@ model ExpenseCategory {
 model WarehouseExpenseSchedule {
   id          Int              @id @default(autoincrement())
   uid         String           @unique @default(cuid())
-  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
-  warehouseId Int
+  // اختياري — البند ممكن يبقى على الشركة عمومًا مش مرتبط بمخزن معيّن.
+  warehouse   Warehouse?       @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  warehouseId Int?
   treasury    TreasuryAccount? @relation(fields: [treasuryId], references: [id], onDelete: SetNull)
   treasuryId  Int?
   category    ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
@@ -290,10 +306,28 @@ model WarehouseExpenseSchedule {
   amount      Float            @default(0)
   dayOfMonth  Int              @default(1)
   active      Boolean          @default(true)
-  lastApplied String? // "YYYY-MM" لآخر شهر اتطبّق
+  lastApplied String? // "YYYY-MM" لآخر شهر اتولّد له استحقاق
   createdAt   DateTime         @default(now())
+  dues        WarehouseExpenseDue[]
 
   @@index([warehouseId])
+}
+
+// استحقاق شهري لبند مخزن ثابت — بيتولّد تلقائي كل شهر لكن ما يتدفعش لحد ما يتأكّد عليه.
+model WarehouseExpenseDue {
+  id         Int                      @id @default(autoincrement())
+  uid        String                   @unique @default(cuid())
+  schedule   WarehouseExpenseSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  scheduleId Int
+  period     String // "YYYY-MM"
+  title      String
+  amount     Float                    @default(0)
+  paid       Boolean                  @default(false)
+  paidAt     DateTime?
+  createdAt  DateTime                 @default(now())
+
+  @@unique([scheduleId, period])
+  @@index([paid])
 }
 
 // ------------------------- ledger / treasury -------------------------
@@ -421,11 +455,24 @@ model InvoiceItem {
   productId Int
   qty       Float
   price     Float
-  // تكاليف إضافية على بند الشراء (لكل السطر) لحساب صافي تكلفة الصنف عليك (landed cost)
-  freight    Float @default(0) // ناولون
-  commission Float @default(0) // عمولة
+  // تكاليف إضافية على البند لحساب صافي تكلفة الصنف عليك (landed cost) — كلها تُضاف للتكلفة
+  freight    Float @default(0) // ناولون (يُدفع نقدًا من خزينة مختارة)
+  tea        Float @default(0) // شاي (يُدفع نقدًا من خزينة مختارة)
+  // كل من الناولون/الشاي بيتدفع من خزينة يختارها المستخدم وبيان خاص بيه.
+  freightTreasury   TreasuryAccount? @relation("ItemFreightTreasury", fields: [freightTreasuryId], references: [id], onDelete: SetNull)
+  freightTreasuryId Int?
+  freightNote       String?
+  teaTreasury   TreasuryAccount? @relation("ItemTeaTreasury", fields: [teaTreasuryId], references: [id], onDelete: SetNull)
+  teaTreasuryId Int?
+  teaNote       String?
+  commission Float @default(0) // عمولة = عدد × سعر (تترحّل لحساب صاحبها)
+  commissionQty   Float @default(0) // عدد العمولة
+  commissionPrice Float @default(0) // سعر وحدة العمولة
+  commissionParty   Party? @relation("ItemCommission", fields: [commissionPartyId], references: [id], onDelete: SetNull)
+  commissionPartyId Int?
 
   @@index([invoiceId])
+  @@index([commissionPartyId])
 }
 
 // ------------------------------ returns ------------------------------
@@ -570,8 +617,23 @@ model DealItem {
   qty       Float
   price     Float // sell price (to client)
   buyPrice  Float @default(0) // buy price (from supplier)
+  // تكاليف إضافية على البند — زي الفواتير بالظبط (بس ناولونه "ناولون خارجي")
+  freight    Float @default(0) // ناولون خارجي (يُدفع من خزينة مختارة)
+  tea        Float @default(0) // شاي
+  freightTreasury   TreasuryAccount? @relation("DealItemFreightTreasury", fields: [freightTreasuryId], references: [id], onDelete: SetNull)
+  freightTreasuryId Int?
+  freightNote       String?
+  teaTreasury   TreasuryAccount? @relation("DealItemTeaTreasury", fields: [teaTreasuryId], references: [id], onDelete: SetNull)
+  teaTreasuryId Int?
+  teaNote       String?
+  commission Float @default(0)
+  commissionQty   Float @default(0)
+  commissionPrice Float @default(0)
+  commissionParty   Party? @relation("DealItemCommission", fields: [commissionPartyId], references: [id], onDelete: SetNull)
+  commissionPartyId Int?
 
   @@index([dealId])
+  @@index([commissionPartyId])
 }
 
 // -------------------------- stock adjustments --------------------------

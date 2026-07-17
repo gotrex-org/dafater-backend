@@ -164,9 +164,10 @@ export class ReportsService {
       where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
       _sum: { cashOut: true, cashIn: true },
     });
-    // مصاريف بضاعة نقدية — تتضاف على التكلفة
+    // مصاريف بضاعة نقدية (شامل الناولون والشاي) — تتضاف على التكلفة. نستثني حركات البيع
+    // الخارجي (dealId) لأن الربح والخسارة ده مبني على الفواتير مش الصفقات.
     const goodsCashAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف بضاعة', ...(date ? { date } : {}) },
+      where: { type: { in: ['مصروف بضاعة', 'ناولون', 'شاي'] }, dealId: null, ...(date ? { date } : {}) },
       _sum: { cashOut: true, cashIn: true },
     });
     // تسوية نقدية — تتخصم من الصافي في الآخر
@@ -192,6 +193,82 @@ export class ReportsService {
       settlement,       // تسويات نقدية
       netProfit: grossProfit - expenses - settlement,
     };
+  }
+
+  // مصاريف بمجموعتين رئيسيتين (مصاريف مخزن / مصاريف خارجية) وجوه كل مجموعة بنود.
+  // بتوحّد المصادر: مصاريف الحركة اليومية + ناولون/شاي الفواتير + ناولون السائقين — كله
+  // بيتجمّع تحت نفس البند حسب نوع الحركة أو البند المختار.
+  async expensesByCategory(from?: string, to?: string) {
+    const date = this.range(from, to);
+    // نوع الحركة (لو مالوش بند مختار) → { المجموعة، اسم البند الافتراضي }
+    const TYPE_MAP: Record<string, { group: 'WAREHOUSE' | 'EXTERNAL'; name: string }> = {
+      'مصروف مخزن': { group: 'WAREHOUSE', name: 'مصاريف مخزن (غير مصنّف)' },
+      'ناولون': { group: 'EXTERNAL', name: 'ناولون داخلي' },
+      'شاي': { group: 'EXTERNAL', name: 'شاي' },
+      'driverFreight': { group: 'EXTERNAL', name: 'ناولون خارجي' },
+      'ناولون خارجي': { group: 'EXTERNAL', name: 'ناولون خارجي' },
+      'مصروف بضاعة': { group: 'EXTERNAL', name: 'مصاريف بضاعة' },
+      'مصروف': { group: 'EXTERNAL', name: 'مصاريف عامة' },
+      'تسوية نقدية': { group: 'EXTERNAL', name: 'تسويات' },
+    };
+    const rows = await this.prisma.transaction.findMany({
+      where: {
+        ...(date ? { date } : {}),
+        OR: [{ type: { in: Object.keys(TYPE_MAP) } }, { categoryId: { not: null } }],
+      },
+      select: { type: true, cashOut: true, cashIn: true, category: { select: { name: true, group: true } } },
+    });
+
+    const groups: Record<'WAREHOUSE' | 'EXTERNAL', Map<string, number>> = { WAREHOUSE: new Map(), EXTERNAL: new Map() };
+    for (const r of rows) {
+      const fallback = TYPE_MAP[r.type];
+      // البند المختار له الأولوية؛ لو مفيش، نرجع لنوع الحركة.
+      const g = (r.category?.group as 'WAREHOUSE' | 'EXTERNAL' | undefined) ?? fallback?.group;
+      const name = r.category?.name ?? fallback?.name;
+      if (!g || !name) continue;
+      const amt = (Number(r.cashOut) || 0) - (Number(r.cashIn) || 0);
+      groups[g].set(name, (groups[g].get(name) ?? 0) + amt);
+    }
+
+    const build = (key: 'WAREHOUSE' | 'EXTERNAL', label: string) => {
+      const items = [...groups[key].entries()]
+        .map(([name, total]) => ({ name, total }))
+        .filter((x) => Math.abs(x.total) > 0.001)
+        .sort((a, b) => b.total - a.total);
+      return { key, label, total: items.reduce((s, x) => s + x.total, 0), items };
+    };
+    const list = [build('WAREHOUSE', 'مصاريف مخزن'), build('EXTERNAL', 'مصاريف خارجية')];
+    return { total: list.reduce((s, g) => s + g.total, 0), groups: list };
+  }
+
+  // أكتر فترة اشتغل فيها عميل/مورد/صنف معيّن — للـ Peak (اختيار جهة وشوف نشاطها الشهري).
+  async busiestFor(type: 'client' | 'supplier' | 'product', id: string, from?: string, to?: string) {
+    const date = this.range(from, to);
+    let invoices: { date: Date; items: { qty: number; price: number }[] }[] = [];
+    if (type === 'product') {
+      invoices = await this.prisma.invoice.findMany({
+        where: { kind: InvoiceKind.SALE, fake: false, ...(date ? { date } : {}), items: { some: { product: { uid: id } } } },
+        select: { date: true, items: { where: { product: { uid: id } }, select: { qty: true, price: true } } },
+      });
+    } else {
+      const kind = type === 'supplier' ? InvoiceKind.PURCHASE : InvoiceKind.SALE;
+      invoices = await this.prisma.invoice.findMany({
+        where: { kind, fake: false, party: { uid: id }, ...(date ? { date } : {}) },
+        select: { date: true, items: { select: { qty: true, price: true } } },
+      });
+    }
+    const byMonth = new Map<string, { total: number; count: number }>();
+    for (const inv of invoices) {
+      const total = inv.items.reduce((s, it) => s + it.qty * it.price, 0);
+      const d = new Date(inv.date);
+      const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const cur = byMonth.get(m) ?? { total: 0, count: 0 };
+      cur.total += total; cur.count += 1;
+      byMonth.set(m, cur);
+    }
+    const months = [...byMonth.entries()].map(([month, v]) => ({ month, ...v })).sort((a, b) => a.month.localeCompare(b.month));
+    const peak = [...months].sort((a, b) => b.total - a.total)[0] ?? null;
+    return { months, peak };
   }
 
   // أرصدة العُهَد — كل شخص (PERSON) شايل فلوس عهدة/أمانة وكام لسه عليه.

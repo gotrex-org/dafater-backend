@@ -27,4 +27,10 @@ export class AuthController {
   me(@CurrentUser() user: AuthUser) {
     return user;
   }
+
+  // نبضة أونلاين — بتحدّث آخر ظهور للمستخدم الحالي
+  @Post('heartbeat')
+  heartbeat(@CurrentUser('id') uid: string) {
+    return this.auth.heartbeat(uid);
+  }
 }

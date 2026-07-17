@@ -4,7 +4,12 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
 import { UsersRepository } from './users.repository';
 
+// أونلاين لو ظهر خلال آخر دقيقتين (النبضة بتيجي كل دقيقة).
+const ONLINE_MS = 125_000;
+
 function fmt(u: any) {
+  const lastSeenAt = u.lastSeenAt ?? null;
+  const online = !!lastSeenAt && Date.now() - new Date(lastSeenAt).getTime() < ONLINE_MS;
   return {
     id: u.uid,
     username: u.username ?? null,
@@ -16,6 +21,8 @@ function fmt(u: any) {
     treasuryIds: u.treasuryIds ?? [],
     role: u.role,
     createdAt: u.createdAt,
+    lastSeenAt,
+    online,
     party: u.party ? { id: u.party.uid, name: u.party.name } : null,
   };
 }

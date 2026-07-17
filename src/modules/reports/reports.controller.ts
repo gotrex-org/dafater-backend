@@ -53,4 +53,19 @@ export class ReportsController {
   custodyBalances() {
     return this.service.custodyBalances();
   }
+
+  @Get('expenses-by-category')
+  expensesByCategory(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.service.expensesByCategory(from, to);
+  }
+
+  @Get('busiest-for')
+  busiestFor(
+    @Query('type') type: 'client' | 'supplier' | 'product',
+    @Query('id') id: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.service.busiestFor(type, id, from, to);
+  }
 }

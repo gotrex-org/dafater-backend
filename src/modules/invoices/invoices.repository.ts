@@ -5,7 +5,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 
-const INVOICE_INCLUDE = { items: { include: { product: true } }, party: true, warehouse: true } as const;
+const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, party: true, warehouse: true } as const;
 
 @Injectable()
 export class InvoicesRepository {
@@ -25,14 +25,14 @@ export class InvoicesRepository {
     return paginate(this.prisma.invoice, q, {
       where,
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      include: { party: true, warehouse: true, items: { include: { product: true } } },
+      include: { party: true, warehouse: true, items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } } },
     });
   }
 
   findOne(id: string) {
     return this.prisma.invoice.findUnique({
       where: { uid: id },
-      include: { party: true, warehouse: true, treasury: true, items: { include: { product: true } } },
+      include: { party: true, warehouse: true, treasury: true, items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } } },
     });
   }
 
@@ -48,14 +48,7 @@ export class InvoicesRepository {
           ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
           : Promise.resolve(null),
       ]);
-      const commissionParty = dto.commissionPartyId
-        ? await tx.party.findUniqueOrThrow({ where: { uid: dto.commissionPartyId }, select: { id: true, name: true } })
-        : null;
-      const products = await tx.product.findMany({
-        where: { uid: { in: dto.items.map((it) => it.productId) } },
-        select: { id: true, uid: true },
-      });
-      const productIdByUid = new Map(products.map((p) => [p.uid, p.id]));
+      const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
       const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
 
       // Exchange rate only meaningful on a USD (dollar) party's invoice.
@@ -74,22 +67,14 @@ export class InvoicesRepository {
           fake: !!dto.fake,
           treasuryId: treasury?.id ?? null,
           note: dto.note,
-          commissionAmount: dto.commissionAmount ?? null,
-          commissionTo: commissionParty?.name ?? null,
-          items: {
-            create: dto.items.map((it) => ({
-              productId: productIdByUid.get(it.productId)!,
-              qty: it.qty,
-              price: it.price,
-              freight: it.freight ?? 0,
-              commission: it.commission ?? 0,
-            })),
-          },
+          commissionAmount: null,
+          commissionTo: null,
+          items: { create: itemsCreate },
         },
       });
 
       // Fake invoice = document only: no ledger/treasury movements at all.
-      const txns = dto.fake ? [] : this.buildTxns(invoice.id, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      const txns = dto.fake ? [] : this.buildTxns(invoice.id, { party, treasury, date, no, total, paid, discount, isSale, items: resolvedItems, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
@@ -114,14 +99,7 @@ export class InvoicesRepository {
           ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
           : Promise.resolve(null),
       ]);
-      const commissionParty = dto.commissionPartyId
-        ? await tx.party.findUniqueOrThrow({ where: { uid: dto.commissionPartyId }, select: { id: true, name: true } })
-        : null;
-      const products = await tx.product.findMany({
-        where: { uid: { in: dto.items.map((it) => it.productId) } },
-        select: { id: true, uid: true },
-      });
-      const productIdByUid = new Map(products.map((p) => [p.uid, p.id]));
+      const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
 
       const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
       await tx.invoice.update({
@@ -137,22 +115,13 @@ export class InvoicesRepository {
           fake: !!dto.fake,
           treasuryId: treasury?.id ?? null,
           note: dto.note ?? null,
-          commissionAmount: dto.commissionAmount ?? null,
-          commissionTo: commissionParty?.name ?? null,
-          items: {
-            deleteMany: {},
-            create: dto.items.map((it) => ({
-              productId: productIdByUid.get(it.productId)!,
-              qty: it.qty,
-              price: it.price,
-              freight: it.freight ?? 0,
-              commission: it.commission ?? 0,
-            })),
-          },
+          commissionAmount: null,
+          commissionTo: null,
+          items: { deleteMany: {}, create: itemsCreate },
         },
       });
 
-      const txns = dto.fake ? [] : this.buildTxns(invId, { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate: rate ?? 0 });
+      const txns = dto.fake ? [] : this.buildTxns(invId, { party, treasury, date, no, total, paid, discount, isSale, items: resolvedItems, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invId }, include: INVOICE_INCLUDE });
@@ -207,16 +176,69 @@ export class InvoicesRepository {
     return { no: String(max + 1) };
   }
 
+  // Resolve invoice items: map product/commission-party uids to ids, compute each item's
+  // commission (عدد × سعر), and return both the Prisma create payload and a light "resolved"
+  // list (freight/tea/commission/recipient) used to build the linked money movements.
+  private async buildItems(tx: Prisma.TransactionClient, items: CreateInvoiceDto['items']) {
+    const productUids = items.map((it) => it.productId);
+    const commUids = [...new Set(items.map((it) => it.commissionPartyId).filter(Boolean) as string[])];
+    const trUids = [...new Set(items.flatMap((it) => [it.freightTreasuryId, it.teaTreasuryId]).filter(Boolean) as string[])];
+    const [products, commParties, treasuries] = await Promise.all([
+      tx.product.findMany({ where: { uid: { in: productUids } }, select: { id: true, uid: true } }),
+      commUids.length
+        ? tx.party.findMany({ where: { uid: { in: commUids } }, select: { id: true, uid: true } })
+        : Promise.resolve([] as { id: number; uid: string }[]),
+      trUids.length
+        ? tx.treasuryAccount.findMany({ where: { uid: { in: trUids } }, select: { id: true, uid: true } })
+        : Promise.resolve([] as { id: number; uid: string }[]),
+    ]);
+    const pById = new Map(products.map((p) => [p.uid, p.id]));
+    const cById = new Map(commParties.map((p) => [p.uid, p.id]));
+    const tById = new Map(treasuries.map((t) => [t.uid, t.id]));
+
+    const create: Prisma.InvoiceItemCreateWithoutInvoiceInput[] = [];
+    const resolved: {
+      freight: number; tea: number; commission: number; commissionPartyId: number | null;
+      freightTreasuryId: number | null; freightNote: string | null; teaTreasuryId: number | null; teaNote: string | null;
+    }[] = [];
+    for (const it of items) {
+      const commQty = it.commissionQty ?? 0;
+      const commPrice = it.commissionPrice ?? 0;
+      const commission = commQty * commPrice;
+      const commissionPartyId = it.commissionPartyId ? (cById.get(it.commissionPartyId) ?? null) : null;
+      const freight = it.freight ?? 0;
+      const tea = it.tea ?? 0;
+      const freightTreasuryId = it.freightTreasuryId ? (tById.get(it.freightTreasuryId) ?? null) : null;
+      const teaTreasuryId = it.teaTreasuryId ? (tById.get(it.teaTreasuryId) ?? null) : null;
+      const freightNote = it.freightNote?.trim() || null;
+      const teaNote = it.teaNote?.trim() || null;
+      create.push({
+        product: { connect: { id: pById.get(it.productId)! } },
+        qty: it.qty, price: it.price,
+        freight, tea, commission, commissionQty: commQty, commissionPrice: commPrice,
+        freightNote, teaNote,
+        ...(commissionPartyId ? { commissionParty: { connect: { id: commissionPartyId } } } : {}),
+        ...(freightTreasuryId ? { freightTreasury: { connect: { id: freightTreasuryId } } } : {}),
+        ...(teaTreasuryId ? { teaTreasury: { connect: { id: teaTreasuryId } } } : {}),
+      });
+      resolved.push({ freight, tea, commission, commissionPartyId, freightTreasuryId, freightNote, teaTreasuryId, teaNote });
+    }
+    return { create, resolved };
+  }
+
   private buildTxns(
     invoiceId: number,
     p: {
       party: { id: number }; treasury: { id: number } | null;
-      commissionParty: { id: number; name: string } | null;
       date: Date; no: string; total: number; paid: number; discount: number; isSale: boolean;
-      dto: CreateInvoiceDto | UpdateInvoiceDto; createdById?: number; exchangeRate?: number;
+      items: {
+        freight: number; tea: number; commission: number; commissionPartyId: number | null;
+        freightTreasuryId: number | null; freightNote: string | null; teaTreasuryId: number | null; teaNote: string | null;
+      }[];
+      createdById?: number; exchangeRate?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { party, treasury, commissionParty, date, no, total, paid, discount, isSale, dto, createdById, exchangeRate } = p;
+    const { party, treasury, date, no, total, paid, discount, isSale, items, createdById, exchangeRate } = p;
     // The party owes/us the invoice total minus any discount.
     const net = total - (discount || 0);
     const discNote = discount > 0 ? ` (بعد خصم ${discount})` : '';
@@ -227,8 +249,24 @@ export class InvoicesRepository {
     } else {
       txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: net, note: `فاتورة شراء #${no}${discNote}`, invoiceId });
       if (paid > 0) txns.push({ date, type: 'دفعة لمورد', partyId: party.id, treasuryId: treasury?.id ?? null, debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${no}`, invoiceId });
-      if (dto.commissionAmount && dto.commissionAmount > 0 && commissionParty) {
-        txns.push({ date, type: 'commission', partyId: commissionParty.id, credit: dto.commissionAmount, note: `عمولة فاتورة #${no}`, invoiceId });
+    }
+    // ناولون/شاي كل واحد بيتدفع نقدًا من خزينته المختارة (fallback خزينة الفاتورة) وببيانه الخاص،
+    // ويُضاف لصافي تكلفة الصنف عبر freight/tea.
+    for (const it of items) {
+      const fTr = it.freightTreasuryId ?? treasury?.id ?? null;
+      if ((it.freight || 0) > 0 && fTr) {
+        // ناولون الفاتورة = ناولون داخلي (بيتجمّع تحت مصاريف خارجية في التقرير)
+        txns.push({ date, type: 'ناولون', treasuryId: fTr, cashOut: it.freight, note: it.freightNote || `ناولون داخلي فاتورة #${no}`, invoiceId });
+      }
+      const tTr = it.teaTreasuryId ?? treasury?.id ?? null;
+      if ((it.tea || 0) > 0 && tTr) {
+        txns.push({ date, type: 'شاي', treasuryId: tTr, cashOut: it.tea, note: it.teaNote || `شاي فاتورة #${no}`, invoiceId });
+      }
+    }
+    // عمولة كل بند: تترحّل تلقائيًا لحساب صاحبها (دائن — مستحقة له).
+    for (const it of items) {
+      if ((it.commission || 0) > 0 && it.commissionPartyId) {
+        txns.push({ date, type: 'commission', partyId: it.commissionPartyId, credit: it.commission, note: `عمولة فاتورة #${no}`, invoiceId });
       }
     }
     // Attribute every generated movement to the user, and stamp the USD exchange rate

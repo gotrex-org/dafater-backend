@@ -52,13 +52,12 @@ export class PartiesService {
     const party = await this.findOne(id);
     const partner = (party as any).linkedParty ?? (party as any).linkedFrom ?? null;
 
-    // Staff restricted to specific parties (ledgerPartyIds) can only view those parties'
-    // statements — or the partner of a linked party they're allowed to see.
+    // ledgerPartyIds بقت "قائمة إخفاء" — الأطراف اللي فيها مايشوفهاش الموظف في كشف الحساب.
     if (user && !user.admin && user.ledgerPartyIds?.length) {
-      const allowed = new Set(user.ledgerPartyIds);
+      const hidden = new Set(user.ledgerPartyIds);
       const visibleUids = [party.uid, ...(partner ? [(partner as any).uid] : [])];
-      if (!visibleUids.some((u) => allowed.has(u))) {
-        throw new ForbiddenException('غير مصرح لك بالاطلاع على كشف حساب هذا الطرف');
+      if (visibleUids.some((u) => hidden.has(u))) {
+        throw new ForbiddenException('هذا الطرف مخفي عنك');
       }
     }
 

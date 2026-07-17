@@ -24,6 +24,7 @@ export class TreasuryService {
     const restricted = !user?.admin && user?.treasuryIds?.length ? user.treasuryIds : undefined;
     return this.repo.movements(q, restricted);
   }
+  allNames() { return this.repo.allNames(); }
   expensesByCategory() { return this.repo.expensesByCategory(); }
   create(dto: TreasuryDto) { return this.repo.create(dto); }
   update(id: string, dto: TreasuryDto) { return this.repo.update(id, dto); }

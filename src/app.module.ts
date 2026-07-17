@@ -36,6 +36,7 @@ import { ReportsModule } from './modules/reports/reports.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
 import { WarehouseExpensesModule } from './modules/warehouse-expenses/warehouse-expenses.module';
+import { AssistantModule } from './modules/assistant/assistant.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { WarehouseExpensesModule } from './modules/warehouse-expenses/warehouse-
     FinanceModule,
     DiscountsModule,
     WarehouseExpensesModule,
+    AssistantModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

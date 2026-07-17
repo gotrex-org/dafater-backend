@@ -8,6 +8,16 @@ export class DealItemDto {
   @IsNumber() qty: number;
   @IsNumber() price: number; // sell price (to client)
   @IsOptional() @IsNumber() buyPrice?: number; // buy price (from supplier)
+  // تكاليف إضافية على البند — زي الفواتير (ناولون خارجي/شاي/عمولة بخزنة وبيان)
+  @IsOptional() @IsNumber() freight?: number;
+  @IsOptional() @IsString() freightTreasuryId?: string;
+  @IsOptional() @IsString() freightNote?: string;
+  @IsOptional() @IsNumber() tea?: number;
+  @IsOptional() @IsString() teaTreasuryId?: string;
+  @IsOptional() @IsString() teaNote?: string;
+  @IsOptional() @IsNumber() commissionQty?: number;
+  @IsOptional() @IsNumber() commissionPrice?: number;
+  @IsOptional() @IsString() commissionPartyId?: string;
 }
 export class CreateDealDto {
   @IsOptional() @IsString() no?: string; // auto-numbered when omitted

@@ -15,6 +15,12 @@ export class TreasuryController {
     return this.service.findAll(q, user);
   }
 
+  // كل الخزائن بالاسم — عشان تحويل النقدية لأي خزينة حتى لو مش ضمن خزائن المستخدم.
+  @Get('names')
+  names() {
+    return this.service.allNames();
+  }
+
   @Get('movements')
   @Permissions('treasury')
   movements(@Query() q: PaginationQueryDto, @CurrentUser() user: any) {
