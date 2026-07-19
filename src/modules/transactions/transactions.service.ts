@@ -259,20 +259,24 @@ export class TransactionsService {
       case EntryType.PARTY_TRANSFER: {
         this.requirePart(dto.partyId, 'الطرف المُحوِّل');
         this.requirePart(dto.partyId2, 'الطرف المستلم');
+        if (dto.partyId === dto.partyId2) throw new BadRequestException('لا يمكن التحويل لنفس الطرف');
         const [from, to] = await Promise.all([
           this.repo.findPartyByUid(dto.partyId!),
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
         const transferGroupId = crypto.randomUUID();
         // المُحوِّل (from) يتخصم منه المبلغ (debit) والمستلم (to) يتضاف له (credit).
-        const leg1 = await this.repo.create({
-          ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId } },
-          debit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId,
-        });
-        await this.repo.create({
-          ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId2 } },
-          credit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId,
-        });
+        // الرِجلين بيتعملوا ذرّيًا (createPair) عشان يستحيل يتخصم من طرف من غير ما يتضاف للتاني.
+        const [leg1] = await this.repo.createPair(
+          {
+            ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId } },
+            debit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId,
+          },
+          {
+            ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId2 } },
+            credit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId,
+          },
+        );
         this.logTxn(user, 'CREATE', leg1.uid, `تحويل ${amt} ج من ${from.name} إلى ${to.name}`);
         return { ok: true };
       }
