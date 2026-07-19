@@ -34,6 +34,15 @@ export class TransactionsRepository {
     return this.prisma.transaction.create({ data, include: TXN_INCLUDE });
   }
 
+  // Create two ledger legs atomically — used by the party-to-party transfer so a
+  // half-posted transfer (one side charged, the other never credited) is impossible.
+  createPair(a: any, b: any) {
+    return this.prisma.$transaction([
+      this.prisma.transaction.create({ data: a, include: TXN_INCLUDE }),
+      this.prisma.transaction.create({ data: b, include: TXN_INCLUDE }),
+    ]);
+  }
+
   createMany(data: any[]) {
     return this.prisma.transaction.createMany({ data });
   }
