@@ -12,12 +12,17 @@ export class DashboardService {
   async stats() {
     const parties = await this.repo.findAllParties();
     const balById = await this.balances.allPartyBalances();
+    // أرصدة الأطراف الدولارية بالدولار — نحوّلها للمصري بمتوسط سعر الصرف المرجّح قبل الجمع،
+    // وإلا إجمالي "له/عليه" بيخلط دولار بجنيه ويطلع غلط.
+    const rateById = await this.balances.avgExchangeRateByParty();
 
     let receivable = 0;
     let payable = 0;
     const top: { id: string; name: string; role: string; balance: number }[] = [];
     for (const p of parties) {
-      const bal = balById[p.id] ?? p.opening;
+      const rawBal = balById[p.id] ?? p.opening;
+      const rate = rateById[p.id] || 0;
+      const bal = (p as any).currency === 'USD' && rate > 0 ? rawBal * rate : rawBal;
       if (p.role === 'CLIENT' && bal > 0) receivable += bal;
       if (p.role === 'SUPPLIER' && bal < 0) payable += -bal;
       top.push({ id: p.uid, name: p.name, role: p.role, balance: bal });

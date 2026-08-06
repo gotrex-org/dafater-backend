@@ -40,7 +40,7 @@ export class TransactionsController {
 
   @Delete(':id')
   @Permissions('entry')
-  remove(@Param('id') id: string) {
-    return this.service.remove(id);
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.remove(id, user);
   }
 }

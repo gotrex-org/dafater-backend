@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
@@ -30,7 +30,9 @@ export class DealsRepository {
   }
 
   async create(dto: CreateDealDto, createdById?: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const autoNo = !dto.no?.trim();
+    // نفس فكرة الفواتير — قيد @@unique([clientId,no]) بيمنع تكرار الرقم من التسابق، ونعيد المحاولة.
+    const run = () => this.prisma.$transaction(async (tx) => {
       const { client, supplier, treasury, commissionParty, no } = await this.resolve(tx, dto, null);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildDealItems(tx, dto.items);
       const { date, paidIn, paidOut, nawlon } = this.amounts(dto);
@@ -48,6 +50,15 @@ export class DealsRepository {
       await tx.transaction.createMany({ data: this.txns(deal.id, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
       return tx.deal.findUnique({ where: { id: deal.id }, include: DEAL_INCLUDE });
     });
+
+    for (let attempt = 0; ; attempt++) {
+      try { return await run(); }
+      catch (e: any) {
+        if (e?.code === 'P2002' && autoNo && attempt < 4) continue;
+        if (e?.code === 'P2002') throw new ConflictException('رقم العملية مستخدم بالفعل لهذا العميل');
+        throw e;
+      }
+    }
   }
 
   async update(uid: string, dto: CreateDealDto, createdById?: number) {
@@ -60,6 +71,13 @@ export class DealsRepository {
       const { date, paidIn, paidOut, nawlon } = this.amounts(dto);
       const sellTotal = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
       const buyTotal  = dto.items.reduce((s, it) => s + it.qty * (it.buyPrice || 0), 0);
+
+      // عمولة الصفقة على مستوى العملية (اللي اتسجّلت من شاشة الصفقات updateCommission) ليها بيان
+      // "commission صفقة" — نحفظها قبل المسح ونعيد ترحيلها، وإلا تعديل الصفقة كان بيلغيها.
+      const prevComm = await tx.transaction.findFirst({
+        where: { dealId, type: 'commission', note: { startsWith: 'commission صفقة' } },
+        select: { partyId: true, credit: true },
+      });
 
       await tx.transaction.deleteMany({ where: { dealId } });
       await tx.dealItem.deleteMany({ where: { dealId } });
@@ -74,6 +92,11 @@ export class DealsRepository {
       });
 
       await tx.transaction.createMany({ data: this.txns(dealId, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
+
+      // إعادة ترحيل عمولة العملية المحفوظة لو الـ dto ماجابش عمولة جديدة (txns بتعيد بناء عمولة الـ dto لو موجودة).
+      if (prevComm?.partyId && prevComm.credit && !(dto.commissionAmount && dto.commissionAmount > 0)) {
+        await tx.transaction.create({ data: { date, type: 'commission', partyId: prevComm.partyId, credit: prevComm.credit, note: `commission صفقة #${no}`, dealId } });
+      }
       return tx.deal.findUnique({ where: { id: dealId }, include: DEAL_INCLUDE });
     });
   }

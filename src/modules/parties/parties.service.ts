@@ -12,8 +12,9 @@ export class PartiesService {
     private balances: BalancesService,
   ) {}
 
-  async findAll(q: PaginationQueryDto, role?: PartyRole, includeHidden = false) {
-    const result = await this.repo.findAll(q, role, includeHidden);
+  async findAll(q: PaginationQueryDto, role?: PartyRole, includeHidden = false, user?: { admin?: boolean; ledgerPartyIds?: string[] }) {
+    const excludeUids = user && !user.admin && user.ledgerPartyIds?.length ? user.ledgerPartyIds : undefined;
+    const result = await this.repo.findAll(q, role, includeHidden, excludeUids);
     const byId = await this.balances.allPartyBalances();
     const lastById = await this.repo.lastActivityByParty();
     const rateById = await this.balances.avgExchangeRateByParty();
@@ -34,10 +35,16 @@ export class PartiesService {
     return result;
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, user?: { admin?: boolean; ledgerPartyIds?: string[] }) {
     const party = await this.repo.findOneByUid(id);
     if (!party) throw new NotFoundException('Party not found');
     const partner = (party as any).linkedParty ?? (party as any).linkedFrom ?? null;
+    // نفس قائمة الإخفاء بتاعة كشف الحساب — تُطبَّق كمان على القراءة المباشرة GET /parties/:id.
+    if (user && !user.admin && user.ledgerPartyIds?.length) {
+      const hidden = new Set(user.ledgerPartyIds);
+      const uids = [(party as any).uid, ...(partner ? [(partner as any).uid] : [])];
+      if (uids.some((u) => hidden.has(u))) throw new ForbiddenException('هذا الطرف مخفي عنك');
+    }
     const balance = partner
       ? await this.balances.partyBalanceMulti([party.id, partner.id])
       : await this.balances.partyBalance(party.id);

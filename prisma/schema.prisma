@@ -444,6 +444,8 @@ model Invoice {
 
   @@index([kind])
   @@index([partyId])
+  // رقم فاتورة فريد لكل طرف — يمنع تكرار الرقم من تسابق nextNo (اقرأ max ثم +1).
+  @@unique([partyId, no])
 }
 
 model InvoiceItem {
@@ -546,6 +548,9 @@ model Discount {
   createdAt DateTime @default(now())
 
   @@index([partyId])
+  // خصم مجدوَل واحد لكل (جدول، تاريخ مناسبة) — يمنع الترحيل المزدوج لو processDue اتنفّذ
+  // بالتوازي. الخصومات اليدوية (scheduleId = null) مش متأثرة لأن NULL في بوستجرس فريد دايمًا.
+  @@unique([scheduleId, date])
 }
 
 enum DiscountRecurrence {
@@ -605,6 +610,9 @@ model Deal {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // رقم عملية فريد لكل عميل — يمنع تكرار الرقم من تسابق nextNo.
+  @@unique([clientId, no])
 }
 
 model DealItem {

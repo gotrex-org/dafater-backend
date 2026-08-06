@@ -97,12 +97,14 @@ export class DriverTripsService {
       const payments = (t as any).payments as Array<{ paymentType: string; amount: number }>;
       const totalFreightPaid    = payments.filter((p) => p.paymentType === 'freight').reduce((s, p) => s + p.amount, 0);
       const totalDelayPaid      = payments.filter((p) => p.paymentType === 'delay').reduce((s, p) => s + p.amount, 0);
+      const totalAdvancePaid    = payments.filter((p) => p.paymentType === 'advance').reduce((s, p) => s + p.amount, 0);
       const totalWeightDiffPaid = payments.filter((p) => p.paymentType === 'weightDiff').reduce((s, p) => s + p.amount, 0);
       const remainingFreight    = Math.max(0, t.agreedFreight - totalFreightPaid);
-      const remainingDelay      = Math.max(0, (t.delayFee ?? 0) - totalDelayPaid);
+      // السلفة بتتخصم من رصيد العطلات زي دفعة العطلة.
+      const remainingDelay      = Math.max(0, (t.delayFee ?? 0) - totalDelayPaid - totalAdvancePaid);
       const remainingWeightDiff = Math.max(0, (t.weightDiffAmount ?? 0) - totalWeightDiffPaid);
       const trulyClosed = !!t.arrivalDate && remainingDelay === 0 && remainingWeightDiff === 0;
-      return { ...t, totalFreightPaid, totalDelayPaid, totalWeightDiffPaid, remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed };
+      return { ...t, totalFreightPaid, totalDelayPaid, totalAdvancePaid, totalWeightDiffPaid, remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed };
     });
     let result = enriched;
     if (filters.status === 'open')   result = enriched.filter((t) => !t.arrivalDate || t.remainingDelay > 0 || t.remainingWeightDiff > 0);
@@ -144,6 +146,7 @@ export class DriverTripsService {
     const trip = await this.findOne(uid);
     const paymentType = dto.paymentType === 'delay' ? 'delay'
                       : dto.paymentType === 'weightDiff' ? 'weightDiff'
+                      : dto.paymentType === 'advance' ? 'advance'
                       : 'freight';
     const payments = (trip as any).payments as Array<{ paymentType: string; amount: number }>;
 
@@ -155,11 +158,16 @@ export class DriverTripsService {
     }
 
     if (paymentType === 'delay') {
+      // العطلة المدفوعة والسلفة الاتنين بيخصموا من رصيد العطلات — فدفعة العطلة محدودة بالباقي بعدهم.
       const totalDelayPaid = payments.filter((p) => p.paymentType === 'delay').reduce((s, p) => s + p.amount, 0);
-      const remaining = (trip.delayFee ?? 0) - totalDelayPaid;
+      const totalAdvance = payments.filter((p) => p.paymentType === 'advance').reduce((s, p) => s + p.amount, 0);
+      const remaining = (trip.delayFee ?? 0) - totalDelayPaid - totalAdvance;
       if (dto.amount > remaining + 0.001)
         throw new BadRequestException(`المبلغ (${dto.amount}) أكبر من العطلة المتبقية (${remaining})`);
     }
+
+    // السلفة كاش من خزنة زي باقي الدفعات، بس مفيش سقف — تقدر تزيد عن رصيد العطلات (سلفة مقدمة)
+    // فيبقى رصيد العطلات سالب (السائق مدين). مفيش فاليديشن على المبلغ هنا.
 
     if (paymentType === 'weightDiff') {
       const totalWdPaid = payments.filter((p) => p.paymentType === 'weightDiff').reduce((s, p) => s + p.amount, 0);
@@ -173,8 +181,8 @@ export class DriverTripsService {
       treasury = await this.repo.findTreasuryByUid(dto.treasuryId) as any;
     }
 
-    const txType = paymentType === 'delay' ? 'driverDelay' : paymentType === 'weightDiff' ? 'driverWeightDiff' : 'driverFreight';
-    const txNote = dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : paymentType === 'weightDiff' ? `دفع فرق وزن (${trip.driverName})` : `دفع ناولون (${trip.driverName})`);
+    const txType = paymentType === 'delay' ? 'driverDelay' : paymentType === 'weightDiff' ? 'driverWeightDiff' : paymentType === 'advance' ? 'driverAdvance' : 'driverFreight';
+    const txNote = dto.note?.trim() || (paymentType === 'delay' ? `دفع عطلة (${trip.driverName})` : paymentType === 'weightDiff' ? `دفع فرق وزن (${trip.driverName})` : paymentType === 'advance' ? `سلفة (${trip.driverName})` : `دفع ناولون (${trip.driverName})`);
     await this.repo.createPaymentWithTreasuryTx(
       { tripId: trip.id, date: new Date(dto.date), amount: dto.amount, paymentType, note: dto.note?.trim() || null },
       treasury ? { date: new Date(dto.date), type: txType, cashOut: dto.amount, treasuryId: treasury.id, note: txNote } : undefined,
@@ -280,6 +288,14 @@ export class DriverTripsService {
   async remove(uid: string) {
     const trip = await this.findOne(uid);
     if (trip.arrivalDate) throw new BadRequestException('لا يمكن حذف رحلة مكتملة');
+    // احذف حركات الخزينة المرتبطة (ناولون/شاي في الدفعات + التأخير/فرق الوزن) قبل حذف الرحلة،
+    // وإلا حذف الرحلة بيكاسكيد الدفعات بس ويسيب حركات الخزينة يتيمة في الخزنة.
+    const payments = (trip as any).payments as Array<{ txId: number | null }>;
+    for (const p of payments) {
+      if (p.txId) await this.repo.deleteTransaction(p.txId);
+    }
+    if (trip.delayTxId) await this.repo.deleteTransaction(trip.delayTxId);
+    if (trip.weightDiffTxId) await this.repo.deleteTransaction(trip.weightDiffTxId);
     return this.repo.remove(uid);
   }
 }

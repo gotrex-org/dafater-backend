@@ -17,11 +17,12 @@ export class PartiesController {
 
   @Get()
   findAll(
+    @CurrentUser() user: any,
     @Query() q: PaginationQueryDto,
     @Query('role') role?: PartyRole,
     @Query('includeHidden') includeHidden?: string,
   ) {
-    return this.service.findAll(q, role, includeHidden === 'true');
+    return this.service.findAll(q, role, includeHidden === 'true', user);
   }
 
   // Accessible to any authenticated user — customer sees their own party's ledger
@@ -42,8 +43,8 @@ export class PartiesController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.service.findOne(id);
+  findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.findOne(id, user);
   }
 
   @Get(':id/ledger')

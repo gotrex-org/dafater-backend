@@ -37,6 +37,8 @@ export class PostEntryDto {
   @IsOptional() @IsIn(['out', 'in']) cashDir?: CashDir;
   @IsOptional() @IsIn(['client', 'supplier', 'warehouse', 'external', 'goods', 'settlement', 'account', 'custody']) cashTarget?: CashTarget;
   @IsOptional() @IsString() holderName?: string; // اسم صاحب العهدة (لو مش طرف موجود)
+  // وجهة تسوية العهدة عند التوريد: خزنة (رد كاش) / عميل (يتحمّلها) / بند (مصروف)
+  @IsOptional() @IsIn(['treasury', 'client', 'category']) custodyDest?: 'treasury' | 'client' | 'category';
   // توزيع صرف البضاعة على تكلفة الأصناف (يرفع صافي السعر زي الناولون)
   @IsOptional() @IsIn(['invoices', 'products', 'count']) goodsMode?: GoodsMode;
   @IsOptional() @IsArray() invoiceIds?: string[];

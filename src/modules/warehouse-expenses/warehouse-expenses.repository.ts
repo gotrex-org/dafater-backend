@@ -5,12 +5,19 @@ import { CreateWarehouseScheduleDto } from './dto/warehouse-expenses.dto';
 const SCHEDULE_INCLUDE = { warehouse: { select: { uid: true, name: true } }, category: { select: { uid: true, name: true } } } as const;
 
 // Every monthly occurrence (at `day`) from `start`'s month up to (and including) `now`.
+// Clamp `day` to the month's length so a day like 31 never overflows into the next month
+// (e.g. new Date(y, 1, 31) → Mar 3) which used to skip February entirely.
 function monthlyOccurrences(start: Date, day: number, now: Date): Date[] {
   const out: Date[] = [];
-  const d = new Date(start.getFullYear(), start.getMonth(), day);
-  while (d.getTime() <= now.getTime() && out.length < 240) {
-    out.push(new Date(d));
-    d.setMonth(d.getMonth() + 1);
+  let y = start.getFullYear();
+  let m = start.getMonth();
+  while (out.length < 240) {
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const d = new Date(y, m, Math.min(day, daysInMonth));
+    if (d.getTime() > now.getTime()) break;
+    out.push(d);
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
   }
   return out;
 }

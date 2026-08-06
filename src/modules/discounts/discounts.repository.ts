@@ -86,16 +86,25 @@ export class DiscountsRepository {
         }
         if (amount > 0.0001) {
           const isSupplier = s.party.role === 'SUPPLIER';
-          const discount = await this.prisma.discount.create({
-            data: { date: occ, partyId: s.partyId, amount, note: s.note || `خصم دوري على ${s.party.name}`, scheduleId: s.id },
-          });
-          await this.prisma.transaction.create({
-            data: {
-              date: occ, type: 'خصم', partyId: s.partyId,
-              note: s.note || `خصم دوري على ${s.party.name}`, discountId: discount.id,
-              ...(isSupplier ? { debit: amount } : { credit: amount }),
-            },
-          });
+          const note = s.note || `خصم دوري على ${s.party.name}`;
+          try {
+            // الخصم + حركة الليدجر في ترانزاكشن واحدة (كلاهما أو ولا واحد). قيد @@unique([scheduleId,date])
+            // بيمنع الترحيل المزدوج لو الميثود اتنفّذت بالتوازي — التكرار بيرمي P2002 فنتخطاه.
+            await this.prisma.$transaction(async (tx) => {
+              const discount = await tx.discount.create({
+                data: { date: occ, partyId: s.partyId, amount, note, scheduleId: s.id },
+              });
+              await tx.transaction.create({
+                data: {
+                  date: occ, type: 'خصم', partyId: s.partyId,
+                  note, discountId: discount.id,
+                  ...(isSupplier ? { debit: amount } : { credit: amount }),
+                },
+              });
+            });
+          } catch (e: any) {
+            if (e?.code !== 'P2002') throw e; // مش تكرار → رمي الخطأ
+          }
         }
         lastKey = key;
       }

@@ -84,7 +84,9 @@ export class ForexRepository {
           type: 'دفع دولار لمورد',
           partyId: party.id,
           debit: dto.usdAmount,
-          cashOut: dto.usdAmount * dto.exchangeRate,
+          // مفيش cashOut هنا — الجنيه خرج بالفعل من الخزينة في خطوة EGP_IN. نختم سعر الصرف بس
+          // عشان متوسط سعر صرف المورد المرجّح يحسبها صح.
+          exchangeRate: dto.exchangeRate,
           note: dto.note ?? `توريد ${dto.usdAmount} دولار — سعر ${dto.exchangeRate}`,
         },
       });

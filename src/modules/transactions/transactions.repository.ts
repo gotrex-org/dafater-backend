@@ -47,6 +47,15 @@ export class TransactionsRepository {
     return this.prisma.transaction.createMany({ data });
   }
 
+  // Create several ledger legs in ONE db transaction (all-or-nothing) — used by
+  // grouped postings like collection+transfer-fee and expense+party-leg so a crash
+  // between the two writes can't leave a half-posted entry. Returns them with includes.
+  createAtomic(datas: any[]) {
+    return this.prisma.$transaction(
+      datas.map((d) => this.prisma.transaction.create({ data: d, include: TXN_INCLUDE })),
+    );
+  }
+
   findPartyByUid(uid: string) {
     return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, name: true } });
   }

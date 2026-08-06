@@ -37,19 +37,21 @@ export class TransactionsService {
         const cNote = hasRate ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashIn.toFixed(2)} $)`.trim() : dto.note;
         const hasFee = !!(dto.transferFee && dto.transferFee > 0);
         const collectGroupId = hasFee ? crypto.randomUUID() : undefined;
-        const collection = await this.repo.create({
+        // التحصيل + رسوم النقل رجلين لازم يتكتبوا مع بعض أو ولا واحد — createAtomic بيضمن كده.
+        const collectDatas: any[] = [{
           ...eb, date, type: 'تحصيل',
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           credit: amt, cashIn, note: cNote,
           ...(collectGroupId ? { groupId: collectGroupId } : {}),
-        });
+        }];
+        if (hasFee) {
+          collectDatas.push({ ...eb, date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية', groupId: collectGroupId });
+        }
+        const [collection] = await this.repo.createAtomic(collectDatas);
         const feeNote = hasFee ? ` (شامل رسوم نقل ${dto.transferFee} ج)` : '';
         this.logTxn(user, 'CREATE', collection.uid,
           `تحصيل ${amt} ج من ${collection.party?.name ?? ''} إلى خزينة ${collection.treasury?.name ?? ''}${feeNote}`);
-        if (hasFee) {
-          await this.repo.create({ ...eb, date, type: 'رسوم نقل', party: { connect: { uid: dto.partyId } }, debit: dto.transferFee, note: 'رسوم نقل النقدية', groupId: collectGroupId });
-        }
         return collection;
       }
 
@@ -75,23 +77,24 @@ export class TransactionsService {
       case EntryType.EXPENSE: {
         this.requirePart(dto.treasuryId, 'الخزينة');
         const expenseGroupId = dto.partyId ? crypto.randomUUID() : undefined;
-        const expTx = await this.repo.create({
+        // المصروف + رجله على حساب الطرف (لو موجود) يتكتبوا ذرّيًا مع بعض.
+        const expenseDatas: any[] = [{
           ...eb, date, type: 'مصروف',
           category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
           treasury: { connect: { uid: dto.treasuryId } },
           cashOut: amt, note: dto.note,
           ...(expenseGroupId ? { groupId: expenseGroupId } : {}),
-        });
-        let onParty = '';
+        }];
         if (dto.partyId) {
-          const partyTx = await this.repo.create({
+          expenseDatas.push({
             ...eb, date, type: 'مصروف على عميل',
             party: { connect: { uid: dto.partyId } },
             debit: amt, note: dto.note,
             groupId: expenseGroupId,
           });
-          onParty = ` — على حساب ${partyTx.party?.name ?? ''}`;
         }
+        const [expTx, partyTx] = await this.repo.createAtomic(expenseDatas);
+        const onParty = partyTx ? ` — على حساب ${partyTx.party?.name ?? ''}` : '';
         const catNote = expTx.category?.name ? ` (${expTx.category.name})` : '';
         this.logTxn(user, 'CREATE', expTx.uid,
           `مصروف ${amt} ج من خزينة ${expTx.treasury?.name ?? ''}${catNote}${onParty}`);
@@ -103,8 +106,10 @@ export class TransactionsService {
         const dir = dto.cashDir === 'in' ? 'in' : 'out';
         const target = dto.cashTarget || 'settlement';
         const isOut = dir === 'out';
+        // تسوية العهدة لعميل/بند مالهاش خزنة (الكاش خرج وقت صرف العهدة) — زي تسوية الحساب.
+        const custodyNonTreasury = target === 'custody' && dir === 'in' && (dto.custodyDest === 'client' || dto.custodyDest === 'category');
         // تسوية الحساب بتعدّل رصيد الطرف بس من غير خزينة — باقي الجهات لازمها خزينة.
-        if (target !== 'account') this.requirePart(dto.treasuryId, 'الخزينة');
+        if (target !== 'account' && !custodyNonTreasury) this.requirePart(dto.treasuryId, 'الخزينة');
         const dirWord = isOut ? 'صرف' : 'توريد';
         // أثر الخزينة: صرف = خروج نقدية، توريد = دخول نقدية
         const treasuryLeg = isOut ? { cashOut: amt } : { cashIn: amt };
@@ -126,8 +131,37 @@ export class TransactionsService {
 
         if (target === 'custody') {
           // عهدة — فلوس مع شخص (موظف أو أي حد). صرف = يديله عهدة (عليه) + خروج من الخزينة،
-          // توريد = رد العهدة (له) + دخول للخزينة. الشخص طرف بدور PERSON (يتعمل تلقائي بالاسم).
+          // توريد = تسوية العهدة (الشخص له). الشخص طرف بدور PERSON (يتعمل تلقائي بالاسم).
           const person = await this.resolvePerson(dto);
+          const dest = dto.custodyDest || 'treasury';
+
+          // توريد عهدة لعميل: الشخص يتقفل (له/credit) + العميل يتحمّلها (عليه/debit) — من غير خزنة.
+          if (!isOut && dest === 'client') {
+            this.requirePart(dto.partyId, 'العميل');
+            const groupId = crypto.randomUUID();
+            const [personLeg, clientLeg] = await this.repo.createAtomic([
+              { ...eb, date, type: 'تسوية عهدة لعميل', party: { connect: { uid: person.uid } }, credit: amt, note: dto.note, groupId },
+              { ...eb, date, type: 'تسوية عهدة لعميل', party: { connect: { uid: dto.partyId } }, debit: amt, note: dto.note, groupId },
+            ]);
+            this.logTxn(user, 'CREATE', personLeg.uid,
+              `تسوية عهدة ${amt} ج من ${person.name} على حساب ${clientLeg.party?.name ?? ''}`);
+            return personLeg;
+          }
+
+          // توريد عهدة كمصروف على بند: الشخص يتقفل (له/credit) + مصروف على البند (expAmt) — من غير خزنة.
+          if (!isOut && dest === 'category') {
+            this.requirePart(dto.categoryId, 'بند المصروف');
+            const groupId = crypto.randomUUID();
+            const [personLeg, expLeg] = await this.repo.createAtomic([
+              { ...eb, date, type: 'تسوية عهدة (مصروف)', party: { connect: { uid: person.uid } }, credit: amt, note: dto.note, groupId },
+              { ...eb, date, type: 'مصروف', category: { connect: { uid: dto.categoryId } }, expAmt: amt, note: dto.note, groupId },
+            ]);
+            this.logTxn(user, 'CREATE', personLeg.uid,
+              `تسوية عهدة ${amt} ج من ${person.name} كمصروف${expLeg.category?.name ? ` (${expLeg.category.name})` : ''}`);
+            return personLeg;
+          }
+
+          // الافتراضي: صرف عهدة (خروج من الخزنة) / رد عهدة كاش (دخول للخزنة).
           const tx = await this.repo.create({
             ...eb, date, type: isOut ? 'عهدة' : 'رد عهدة',
             party: { connect: { uid: person.uid } },
@@ -325,13 +359,22 @@ export class TransactionsService {
 
   async update(id: string, dto: UpdateTransactionDto, user?: any) {
     const before = await this.repo.findByUid(id);
+    // نفس فحص خزينة المستخدم اللي في post — عشان موظف مقيّد على خزنة مايعدّلش حركة على خزنة تانية.
+    this.requireTreasuryAllowed(before.treasury?.uid, user);
+    this.requireTreasuryAllowed(before.treasury2?.uid, user);
+    if (dto.treasuryId) this.requireTreasuryAllowed(dto.treasuryId, user);
     const after = await this.repo.update(id, dto);
     const diff = this.diffTxn(before, after);
     this.logTxn(user, 'UPDATE', after.uid, `تعديل حركة: ${after.type}`, diff);
     return after;
   }
 
-  remove(id: string) { return this.repo.remove(id); }
+  async remove(id: string, user?: any) {
+    const txn = await this.repo.findByUid(id);
+    this.requireTreasuryAllowed(txn.treasury?.uid, user);
+    this.requireTreasuryAllowed(txn.treasury2?.uid, user);
+    return this.repo.remove(id);
+  }
 
   // صرف نقدية على بضاعة — يوزّع المبلغ على بنود شراء الأصناف المختارة عن طريق زيادة
   // "الناولون" (freight) بتاعها، وده بيرفع صافي سعر التكلفة (avgCost) للأصناف دي.
@@ -375,17 +418,20 @@ export class TransactionsService {
     if (!value) throw new BadRequestException(`اختر ${label}`);
   }
 
-  // صاحب العهدة — طرف بدور PERSON. لو اتبعت partyId نستخدمه، وإلا نلاقي الاسم أو نعمله جديد.
+  // صاحب العهدة — طرف بدور PERSON. الاسم (holderName) هو المصدر الأساسي، عشان في تسوية
+  // العهدة لعميل يبقى partyId هو العميل (مش صاحب العهدة). لو مفيش اسم نرجع لـ partyId.
   private async resolvePerson(dto: PostEntryDto): Promise<{ uid: string; name: string }> {
+    const name = (dto.holderName || '').trim();
+    if (name) {
+      const existing = await this.prisma.party.findFirst({ where: { name, role: 'PERSON' }, select: { uid: true, name: true } });
+      if (existing) return existing;
+      return this.prisma.party.create({ data: { name, role: 'PERSON' }, select: { uid: true, name: true } });
+    }
     if (dto.partyId) {
       const p = await this.prisma.party.findUnique({ where: { uid: dto.partyId }, select: { uid: true, name: true } });
       if (p) return p;
     }
-    const name = (dto.holderName || '').trim();
-    if (!name) throw new BadRequestException('اكتب اسم صاحب العهدة');
-    const existing = await this.prisma.party.findFirst({ where: { name, role: 'PERSON' }, select: { uid: true, name: true } });
-    if (existing) return existing;
-    return this.prisma.party.create({ data: { name, role: 'PERSON' }, select: { uid: true, name: true } });
+    throw new BadRequestException('اكتب اسم صاحب العهدة');
   }
 
   private requireTreasuryAllowed(treasuryUid: string | undefined, user?: any) {

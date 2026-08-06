@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { InvoiceKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
@@ -39,8 +39,11 @@ export class InvoicesRepository {
   async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; discount: number; isSale: boolean; createdById?: number }) {
     const { total, paid, discount, isSale, createdById } = computed;
     const date = new Date(dto.date);
+    const autoNo = !dto.no?.trim();
 
-    return this.prisma.$transaction(async (tx) => {
+    // لو رقمين اتولدوا في نفس اللحظة لنفس الطرف، قيد @@unique([partyId,no]) بيرمي P2002 —
+    // نعيد المحاولة (nextNo هيقرأ max الجديد) لحد ما ينجح. رقم يدوي مكرر بيرمي خطأ واضح.
+    const run = () => this.prisma.$transaction(async (tx) => {
       const [party, warehouse, treasury] = await Promise.all([
         tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, currency: true } }),
         tx.warehouse.findUniqueOrThrow({ where: { uid: dto.warehouseId }, select: { id: true } }),
@@ -79,6 +82,15 @@ export class InvoicesRepository {
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
     });
+
+    for (let attempt = 0; ; attempt++) {
+      try { return await run(); }
+      catch (e: any) {
+        if (e?.code === 'P2002' && autoNo && attempt < 4) continue;
+        if (e?.code === 'P2002') throw new ConflictException('رقم الفاتورة مستخدم بالفعل لهذا الطرف');
+        throw e;
+      }
+    }
   }
 
   async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number; discount: number; createdById?: number }) {
@@ -86,10 +98,12 @@ export class InvoicesRepository {
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.invoice.findUniqueOrThrow({ where: { uid: id }, select: { id: true, kind: true, no: true } });
+      const existing = await tx.invoice.findUniqueOrThrow({ where: { uid: id }, select: { id: true, kind: true, no: true, commissionAmount: true, commissionTo: true } });
       const { id: invId, kind, no } = existing;
       const isSale = kind === InvoiceKind.SALE;
 
+      // نمسح كل الحركات ونعيد بناء عمولات البنود من buildTxns، بس نحفظ عمولة الفاتورة (اللي
+      // اتسجّلت من شاشة التفاصيل updateCommission) ونعيد ترحيلها بعدين — قبل كده كانت بتتمسح.
       await tx.transaction.deleteMany({ where: { invoiceId: invId } });
 
       const [party, warehouse, treasury] = await Promise.all([
@@ -115,14 +129,23 @@ export class InvoicesRepository {
           fake: !!dto.fake,
           treasuryId: treasury?.id ?? null,
           note: dto.note ?? null,
-          commissionAmount: null,
-          commissionTo: null,
+          // متتصفّرش العمولة — بتفضل زي ما هي (بتتظبط من updateCommission بس).
           items: { deleteMany: {}, create: itemsCreate },
         },
       });
 
       const txns = dto.fake ? [] : this.buildTxns(invId, { party, treasury, date, no, total, paid, discount, isSale, items: resolvedItems, createdById, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
+
+      // إعادة ترحيل عمولة الفاتورة المحفوظة (لو موجودة) — لأن deleteMany مسحت صفها فوق.
+      if (!dto.fake && existing.commissionAmount && existing.commissionAmount > 0 && existing.commissionTo) {
+        const cp = await tx.party.findFirst({ where: { name: existing.commissionTo }, select: { id: true } });
+        if (cp) {
+          await tx.transaction.create({
+            data: { date, type: 'commission', partyId: cp.id, credit: existing.commissionAmount, note: `عمولة فاتورة #${no}`, invoiceId: invId },
+          });
+        }
+      }
 
       return tx.invoice.findUnique({ where: { id: invId }, include: INVOICE_INCLUDE });
     });

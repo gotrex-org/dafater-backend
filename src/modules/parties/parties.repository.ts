@@ -11,10 +11,12 @@ const LINKED_SELECT = { id: true, uid: true, name: true, role: true } as const;
 export class PartiesRepository {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(q: PaginationQueryDto, role?: PartyRole, includeHidden = false) {
+  async findAll(q: PaginationQueryDto, role?: PartyRole, includeHidden = false, excludeUids?: string[]) {
     const where = {
       ...(role ? { role } : {}),
       ...(includeHidden ? {} : { hidden: false }),
+      // قائمة الإخفاء (ledgerPartyIds) — الأطراف اللي الموظف مايشوفهاش تتشال من القائمة كمان.
+      ...(excludeUids?.length ? { uid: { notIn: excludeUids } } : {}),
       ...(q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : {}),
     };
     return paginate(this.prisma.party, q, {
