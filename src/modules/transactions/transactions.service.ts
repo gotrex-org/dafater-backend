@@ -299,16 +299,16 @@ export class TransactionsService {
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
         const transferGroupId = crypto.randomUUID();
-        // المُحوِّل (from) يتخصم منه المبلغ (debit) والمستلم (to) يتضاف له (credit).
-        // الرِجلين بيتعملوا ذرّيًا (createPair) عشان يستحيل يتخصم من طرف من غير ما يتضاف للتاني.
+        // المُحوِّل (from) الفلوس تتسجّله (credit/له)، والمستلم (to) تتسجّل عليه (debit/عليه).
+        // الرِجلين بيتعملوا ذرّيًا (createPair) عشان يستحيل يتحرّك طرف من غير التاني.
         const [leg1] = await this.repo.createPair(
           {
             ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId } },
-            debit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId,
+            credit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId,
           },
           {
             ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId2 } },
-            credit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId,
+            debit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId,
           },
         );
         this.logTxn(user, 'CREATE', leg1.uid, `تحويل ${amt} ج من ${from.name} إلى ${to.name}`);

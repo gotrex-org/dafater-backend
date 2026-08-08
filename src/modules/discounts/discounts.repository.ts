@@ -52,10 +52,13 @@ export class DiscountsRepository {
     return this.prisma.discountSchedule.delete({ where: { uid } });
   }
 
-  // Net purchases (invoice items) from a party between [from, to), excluding fake invoices.
-  private async purchasesFrom(partyId: number, from: Date, to: Date): Promise<number> {
+  // إجمالي مبلغ البضاعة المسحوبة من الشركة للطرف بين [from, to) (من غير الفواتير الوهمية):
+  // للعميل = فواتير البيع (بضاعة سحبها من الشركة)، وللمورد = فواتير الشراء (بضاعة اشتريناها منه).
+  // النسبة بتتحسب على مبلغ البضاعة (qty×price)، مش على النقدية المدفوعة.
+  private async goodsVolume(partyId: number, from: Date, to: Date, role?: string): Promise<number> {
+    const kind = role === 'CLIENT' ? 'SALE' : 'PURCHASE';
     const items = await this.prisma.invoiceItem.findMany({
-      where: { invoice: { partyId, kind: 'PURCHASE', fake: false, date: { gte: from, lt: to } } },
+      where: { invoice: { partyId, kind, fake: false, date: { gte: from, lt: to } } },
       select: { qty: true, price: true },
     });
     return items.reduce((s, it) => s + it.qty * it.price, 0);
@@ -81,7 +84,7 @@ export class DiscountsRepository {
         } else if (s.percent > 0) {
           const prev = new Date(occ);
           prev.setMonth(prev.getMonth() - step);
-          const base = await this.purchasesFrom(s.partyId, prev, occ);
+          const base = await this.goodsVolume(s.partyId, prev, occ, s.party.role);
           amount = (base * s.percent) / 100;
         }
         if (amount > 0.0001) {
@@ -139,13 +142,13 @@ export class DiscountsRepository {
 
   async create(dto: CreateDiscountDto, createdById?: number) {
     // Resolve the discount value: cash amount, cartons×price, or % of this month's purchases.
-    const base = await this.prisma.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true } });
+    const base = await this.prisma.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, role: true } });
     let amount = dto.amount ?? 0;
     if (dto.percent && dto.percent > 0) {
       const now = new Date();
       const from = new Date(now.getFullYear(), now.getMonth(), 1);
       const to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      amount = ((await this.purchasesFrom(base.id, from, to)) * dto.percent) / 100;
+      amount = ((await this.goodsVolume(base.id, from, to, base.role)) * dto.percent) / 100;
     } else if (dto.cartons && dto.cartons > 0) {
       amount = dto.cartons * (dto.cartonPrice ?? 0);
     }
