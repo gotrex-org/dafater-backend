@@ -266,11 +266,14 @@ export class InvoicesRepository {
     const net = total - (discount || 0);
     const discNote = discount > 0 ? ` (بعد خصم ${discount})` : '';
     const txns: Prisma.TransactionCreateManyInput[] = [];
+    // نختم سعر صرف الفاتورة على معاملة الطرف الرئيسية (فاتورة بيع/شراء) عشان متوسط سعر
+    // صرف الطرف الدولاري يتحسب صح في الميزان وكشف الحساب. صفر لو الطرف بالمصري.
+    const usd = exchangeRate && exchangeRate > 0 ? { exchangeRate } : {};
     if (isSale) {
-      txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: net, note: `فاتورة بيع #${no}${discNote}`, invoiceId });
+      txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: net, note: `فاتورة بيع #${no}${discNote}`, invoiceId, ...usd });
       if (paid > 0) txns.push({ date, type: 'تحصيل', partyId: party.id, treasuryId: treasury?.id ?? null, credit: paid, cashIn: paid, note: `محصّل مع فاتورة #${no}`, invoiceId });
     } else {
-      txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: net, note: `فاتورة شراء #${no}${discNote}`, invoiceId });
+      txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: net, note: `فاتورة شراء #${no}${discNote}`, invoiceId, ...usd });
       if (paid > 0) txns.push({ date, type: 'دفعة لمورد', partyId: party.id, treasuryId: treasury?.id ?? null, debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${no}`, invoiceId });
     }
     // ناولون/شاي كل واحد بيتدفع نقدًا من خزينته المختارة (fallback خزينة الفاتورة) وببيانه الخاص،
