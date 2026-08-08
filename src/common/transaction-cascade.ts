@@ -21,6 +21,7 @@ export async function deleteTransactionAndEffects(prisma: PrismaService, transac
       : [txn.id];
 
     await tx.driverPayment.deleteMany({ where: { txId: { in: ids } } });
+    await tx.driverAdvance.deleteMany({ where: { txId: { in: ids } } });
     await tx.dollarAgentTx.deleteMany({ where: { txId: { in: ids } } });
 
     const loanReturns = await tx.loanReturn.findMany({ where: { txId: { in: ids } } });

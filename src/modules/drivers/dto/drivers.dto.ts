@@ -1,4 +1,12 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+
+export class CreateDriverAdvanceDto {
+  @IsString() driverName: string;
+  @IsDateString() date: string;
+  @IsNumber() @IsPositive() amount: number;
+  @IsString() treasuryId: string;
+  @IsOptional() @IsString() note?: string;
+}
 
 export class CreateDriverDto {
   @IsString() name: string;

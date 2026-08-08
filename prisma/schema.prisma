@@ -794,6 +794,22 @@ model DriverPayment {
   @@map("driver_payments")
 }
 
+// سلفة على مستوى السائق (مستقلة عن الرحلة) — كاش يخرج من خزنة، وبتتسدّد من العطلات المكتسبة
+model DriverAdvance {
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
+  driverName String
+  date       DateTime
+  amount     Float
+  note       String?
+  // حركة الخزينة المدفوعة مع السلفة (cashOut) — نفس أسلوب DriverPayment.txId
+  txId       Int?
+  createdAt  DateTime @default(now())
+
+  @@index([driverName])
+  @@map("driver_advances")
+}
+
 // -------------------------- public orders --------------------------
 
 model Order {

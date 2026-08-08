@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestj
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { DriversService } from './drivers.service';
-import { CreateDriverDto, UpdateDriverDto } from './dto/drivers.dto';
+import { CreateDriverDto, CreateDriverAdvanceDto, UpdateDriverDto } from './dto/drivers.dto';
 
 @Controller('drivers')
 @Permissions('settings', 'manifests', 'driver-trips')
@@ -11,6 +11,16 @@ export class DriversController {
 
   @Get()
   findAll(@Query() q: PaginationQueryDto) { return this.service.findAll(q); }
+
+  // ── سلف السائق ── (قبل ':id' عشان ماتتفهمش advances كـ id)
+  @Post('advances')
+  createAdvance(@Body() dto: CreateDriverAdvanceDto) { return this.service.createAdvance(dto); }
+
+  @Get('advances/:name')
+  listAdvances(@Param('name') name: string) { return this.service.listAdvances(name); }
+
+  @Delete('advances/:uid')
+  deleteAdvance(@Param('uid') uid: string) { return this.service.deleteAdvance(uid); }
 
   @Get(':id')
   findOne(@Param('id') id: string) { return this.service.findOne(id); }
