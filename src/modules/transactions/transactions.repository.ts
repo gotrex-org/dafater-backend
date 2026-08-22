@@ -97,6 +97,8 @@ export class TransactionsRepository {
 
     if (dto.date !== undefined) data.date = new Date(dto.date);
     if (dto.note !== undefined) data.note = dto.note;
+    // '' = امسح الملاحظة ورجّع العميل لـ "استلام نقدية"
+    if (dto.clientNote !== undefined) data.clientNote = dto.clientNote || null;
 
     if (dto.partyId !== undefined) {
       if (dto.partyId) {

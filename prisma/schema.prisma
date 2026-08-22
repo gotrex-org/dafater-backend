@@ -368,6 +368,10 @@ model Transaction {
 
   note String?
 
+  // ملاحظة تظهر للعميل في بوابته بدل البيان الداخلي. التحصيل بيظهر للعميل
+  // "استلام نقدية" من غير تفاصيل إلا لو اتكتبت هنا ملاحظة مخصوصة له.
+  clientNote String?
+
   invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   invoiceId Int?
 

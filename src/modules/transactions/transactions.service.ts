@@ -43,6 +43,7 @@ export class TransactionsService {
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           credit: amt, cashIn, note: cNote,
+          clientNote: dto.clientNote || null,
           ...(collectGroupId ? { groupId: collectGroupId } : {}),
         }];
         if (hasFee) {

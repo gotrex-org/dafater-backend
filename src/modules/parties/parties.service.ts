@@ -81,8 +81,13 @@ export class PartiesService {
     let running = totalOpening;
     let periodOpening = totalOpening;
     const rows: any[] = [];
+    // ترقيم مستندات الطرف (فاتورة/بيع خارجي) ورا بعض من أول تاريخه — بيتحسب كمان على
+    // الحركات اللي قبل الفترة عشان الرقم يفضل ثابت مهما اتغيّر فلتر التاريخ.
+    const docSeq = new Map<string, number>();
 
     for (const t of txns) {
+      const docKey = t.invoice?.uid ? `inv:${t.invoice.uid}` : t.deal?.uid ? `deal:${t.deal.uid}` : null;
+      if (docKey && !docSeq.has(docKey)) docSeq.set(docKey, docSeq.size + 1);
       if (fromD && t.date < fromD) {
         running += (t.debit || 0) - (t.credit || 0);
         periodOpening = running;
@@ -95,6 +100,8 @@ export class PartiesService {
         date: t.date,
         type: t.type,
         note: t.note,
+        clientNote: (t as any).clientNote ?? null,
+        docNo: docKey ? docSeq.get(docKey)! : null,
         debit: t.debit,
         credit: t.credit,
         balance: running,
@@ -123,6 +130,41 @@ export class PartiesService {
     const closing = rows.length ? rows[rows.length - 1].balance : periodOpening;
     rows.reverse();
     return { party, linkedParty: partner, opening: periodOpening, rows, balance: closing };
+  }
+
+  // كشف حساب بوابة العميل: نفس أرقام الكشف الداخلي بس بصياغة العميل —
+  //  • الفواتير مترقّمة ورا بعض (فاتورة ١، ٢، ٣…) من غير رقم داخلي ولا نوع المستند
+  //    (فاتورة عادية أو بيع خارجي) — العميل مالوش دعوة بالفرق ده.
+  //  • التحصيل بيظهر "استلام نقدية" من غير أي تفاصيل، إلا لو المدير كتب ملاحظة للعميل.
+  //  • البيانات الداخلية (اسم/دور الطرف المرتبط، بيانات العربيات) مابتخرجش أصلاً من هنا.
+  async clientLedger(id: string, from?: string, to?: string) {
+    const { opening, balance, rows } = await this.ledger(id, from, to);
+    return {
+      opening,
+      balance,
+      rows: rows.map((r) => {
+        const isReceipt = (r.credit || 0) > 0;
+        // "محصّل مع فاتورة" مرتبط بفاتورة بس هو استلام نقدية — يتعامل كتحصيل مش كمستند.
+        const isDoc = !!(r.invoiceUid || r.dealUid) && !isReceipt;
+        return {
+          id: r.id,
+          date: r.date,
+          type: isDoc ? 'فاتورة' : isReceipt ? 'استلام نقدية' : r.type,
+          note: isDoc
+            ? `فاتورة ${r.docNo}${r.clientNote ? ` — ${r.clientNote}` : ''}`
+            : isReceipt
+            ? (r.clientNote || 'استلام نقدية')
+            : (r.clientNote || r.note || '—'),
+          debit: r.debit,
+          credit: r.credit,
+          balance: r.balance,
+          docNo: isDoc ? r.docNo : null,
+          invoiceUid: isDoc ? r.invoiceUid : null,
+          dealUid: isDoc ? r.dealUid : null,
+          invoiceItems: isDoc ? r.invoiceItems : null,
+        };
+      }),
+    };
   }
 
   async linkParty(id: string, dto: LinkPartyDto) {

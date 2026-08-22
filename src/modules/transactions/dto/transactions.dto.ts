@@ -48,12 +48,14 @@ export class PostEntryDto {
   @IsOptional() @IsString() direction?: 'debit' | 'credit'; // for adjust
   @IsOptional() @IsNumber() transferFee?: number; // رسوم نقل النقدية — تُسجّل على العميل (عليه)
   @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() clientNote?: string; // ملاحظة تظهر للعميل في بوابته بدل "استلام نقدية"
 }
 
 export class UpdateTransactionDto {
   @IsOptional() @IsDateString() date?: string;
   @IsOptional() @IsNumber() amount?: number;
   @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() clientNote?: string;
   @IsOptional() @IsString() partyId?: string;
   @IsOptional() @IsString() treasuryId?: string;
 }

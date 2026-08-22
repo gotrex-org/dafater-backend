@@ -31,7 +31,7 @@ export class PartiesController {
   myLedger(@Req() req: Request, @Query('from') from?: string, @Query('to') to?: string) {
     const partyId = (req as any).user?.partyId;
     if (!partyId) throw new ForbiddenException('No party linked to this account');
-    return this.service.ledger(partyId, from, to);
+    return this.service.clientLedger(partyId, from, to);
   }
 
   // Must come before ':id' — otherwise "direct-sale" is matched as an :id param.
