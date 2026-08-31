@@ -253,10 +253,17 @@ export class InvoicesRepository {
       .filter((t) => t.type === 'رسوم نقل')
       .reduce((s, t) => s + ((isSale ? t.debit : t.credit) || 0), 0);
 
+    // مصاريف الفترة = المصاريف المتسجّلة على الطرف بره الفاتورة، من الفاتورة دي لحد
+    // اللي بعدها — نفس نافذة السدادات. بتتعرض كإجمالي واحد في ورقة الفاتورة.
+    const expensesTotal = win
+      .filter((t) => t.type.startsWith('مصروف'))
+      .reduce((s, t) => s + ((isSale ? t.debit : t.credit) || 0), 0);
+
     return {
       previousBalance,
       remaining,
       cashTransfer,
+      expensesTotal,
       payments,
       paymentsTotal,
       nextInvoiceNo: nextInv?.no ?? null,
@@ -299,6 +306,7 @@ export class InvoicesRepository {
       discount,
       previousBalance: s.previousBalance,
       cashTransfer: s.cashTransfer,
+      expensesTotal: s.expensesTotal,
       payments: s.payments.map((p) => ({ id: p.id, date: p.date, amount: p.amount, note: p.clientNote || 'استلام نقدية' })),
       paymentsTotal: s.paymentsTotal,
       remaining: s.remaining,
