@@ -483,9 +483,14 @@ export class InvoicesRepository {
         manifests: {
           orderBy: [{ date: 'asc' }, { id: 'asc' }],
           select: {
-            id: true, uid: true, no: true, date: true, vehicleNo: true, vehicleLabel: true,
-            driverName: true, note: true, closedAt: true, closedBy: true,
+            // بيانات الكشف بالكامل — التاب بيرسم نفس شكل كشف العربية المطبوع بالظبط.
+            id: true, uid: true, no: true, date: true, clientName: true,
+            vehicleNo: true, vehicleLabel: true, trailerNo: true,
+            driverName: true, driverNID: true, driverPhone: true,
+            note: true, closedAt: true, closedBy: true,
             items: { select: { uid: true, name: true, qty: true } },
+            // وصلت ولا لسه في الطريق — منها لون التاب والكشف
+            driverTrips: { select: { arrivalDate: true } },
           },
         },
       },

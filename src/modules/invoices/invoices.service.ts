@@ -71,13 +71,24 @@ export class InvoicesService {
         return { id: it.uid, name: it.name, qty: it.qty, price, total: price === null ? null : it.qty * price };
       });
 
+      // نفس قاعدة قايمة الكشوفات: مفيش رحلات = مش متحدّد؛ فيه رحلة وصلت = وصلت؛
+      // غير كده لسه في الطريق.
+      const status: 'arrived' | 'pending' | 'none' = m.driverTrips.length === 0
+        ? 'none'
+        : m.driverTrips.some((t) => t.arrivalDate != null) ? 'arrived' : 'pending';
+
       return {
         id: m.uid,
         no: m.no,
         date: m.date,
+        clientName: m.clientName,
         vehicleNo: m.vehicleNo,
         vehicleLabel: m.vehicleLabel,
+        trailerNo: m.trailerNo,
         driverName: m.driverName,
+        driverNID: m.driverNID,
+        driverPhone: m.driverPhone,
+        status,
         note: m.note,
         closedAt: m.closedAt,
         closedBy: m.closedBy,
@@ -135,8 +146,14 @@ export class InvoicesService {
         id: t.id,
         no: t.no,
         date: t.date,
+        clientName: t.clientName,
         vehicleLabel: t.vehicleLabel,
         vehicleNo: t.vehicleNo,
+        trailerNo: t.trailerNo,
+        driverName: t.driverName,
+        // الرقم القومي وتليفون السائق بيانات شخصية — مابتخرجش للعميل.
+        status: t.status,
+        note: t.note,
         items: t.items,
         itemsTotal: t.itemsTotal,
         expenses: t.expenses.map((e) => ({
