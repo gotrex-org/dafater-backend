@@ -11,6 +11,7 @@ export class ProductsRepository {
 
   catalog() {
     return this.prisma.product.findMany({
+      where: { hidden: false },
       select: { uid: true, name: true, unit: true, service: true },
       orderBy: { name: 'asc' },
     });
@@ -18,7 +19,10 @@ export class ProductsRepository {
 
   findAll(q: PaginationQueryDto) {
     return paginate(this.prisma.product, q, {
-      where: q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : {},
+      where: {
+        hidden: false,
+        ...(q.search ? { name: { contains: q.search, mode: 'insensitive' as const } } : {}),
+      },
       orderBy: { name: 'asc' },
     });
   }
@@ -67,7 +71,12 @@ export class ProductsRepository {
   }
 
   findByUid(id: string) {
-    return this.prisma.product.findUnique({ where: { uid: id }, select: { id: true } });
+    return this.prisma.product.findUnique({ where: { uid: id }, select: { id: true, name: true } });
+  }
+
+  /** الأرشفة — الطريق الوحيد لـ"شيل" صنف مستعمل في فواتير فعلية من غير ما يمسّها. */
+  archive(id: number) {
+    return this.prisma.product.update({ where: { id }, data: { hidden: true } });
   }
 
   async countHardBlockers(id: number) {

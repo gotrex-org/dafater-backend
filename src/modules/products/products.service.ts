@@ -3,6 +3,7 @@ import { InvoiceKind } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsRepository } from './products.repository';
+import { deleteConflict, type DeleteMode } from '../../common/delete-mode';
 
 @Injectable()
 export class ProductsService {
@@ -34,24 +35,30 @@ export class ProductsService {
   create(dto: CreateProductDto) { return this.repo.create(dto); }
   update(id: string, dto: UpdateProductDto) { return this.repo.update(id, dto); }
 
-  async remove(id: string, cascade: boolean) {
+  async remove(id: string, mode: DeleteMode) {
     const prod = await this.repo.findByUid(id);
     if (!prod) throw new NotFoundException('Product not found');
 
-    const hardBlockers = await this.repo.countHardBlockers(prod.id);
-    if (hardBlockers > 0) {
-      throw new ConflictException(
-        `هذا الصنف مُستخدم في ${hardBlockers} بند فاتورة/صفقة فعلية — لا يمكن حذفه لأن ذلك يعني حذف فواتير أخرى`,
-      );
+    const [hard, soft] = await Promise.all([
+      this.repo.countHardBlockers(prod.id),
+      this.repo.countCascadeEligible(prod.id),
+    ]);
+    const related = hard + soft;
+
+    // Nothing points at it — a real delete leaves nothing behind, so don't ask.
+    if (related === 0) return this.repo.removeCascade(prod.id);
+
+    // "شيله وسيب المعاملات" — the invoice items keep resolving the name through the
+    // relation, the product just stops appearing anywhere you'd pick it.
+    if (mode === 'archive') return this.repo.archive(prod.id);
+
+    if (mode === 'cascade') {
+      // Invoice/deal items are other people's paperwork; cascading through them would
+      // silently rewrite invoices, so this stays impossible however it's asked for.
+      if (hard > 0) throw new ConflictException(deleteConflict(`الصنف «${prod.name}»`, related, false));
+      return this.repo.removeCascade(prod.id);
     }
 
-    if (!cascade) {
-      const related = await this.repo.countCascadeEligible(prod.id);
-      if (related > 0) {
-        throw new ConflictException(`يوجد ${related} تسوية مخزن/عارية مرتبطة بهذا الصنف — احذفها أولاً أو أكّد حذفها معه`);
-      }
-    }
-
-    return this.repo.removeCascade(prod.id);
+    throw new ConflictException(deleteConflict(`الصنف «${prod.name}»`, related, hard === 0));
   }
 }

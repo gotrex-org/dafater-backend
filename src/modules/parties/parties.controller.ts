@@ -4,6 +4,7 @@ import {
 import { Request } from 'express';
 import { PartyRole } from '@prisma/client';
 import { PartiesService } from './parties.service';
+import { parseDeleteMode } from '../../common/delete-mode';
 import { CreatePartyDto, LinkPartyDto, UpdatePartyDto } from './dto/party.dto';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { AdminOnly } from '../../common/decorators/admin.decorator';
@@ -78,7 +79,11 @@ export class PartiesController {
 
   @Delete(':id')
   @AdminOnly() // حذف الأطراف للمدير فقط
-  remove(@Param('id') id: string, @Query('cascade') cascade?: string) {
-    return this.service.remove(id, cascade === 'true');
+  remove(
+    @Param('id') id: string,
+    @Query('cascade') cascade?: string,
+    @Query('archive') archive?: string,
+  ) {
+    return this.service.remove(id, parseDeleteMode(cascade, archive));
   }
 }

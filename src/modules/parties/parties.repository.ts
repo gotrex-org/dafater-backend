@@ -34,7 +34,7 @@ export class PartiesRepository {
   }
 
   findRawByUid(uid: string) {
-    return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, uid: true } });
+    return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, uid: true, name: true } });
   }
 
   async lastActivityByParty(): Promise<Record<number, Date | null>> {
@@ -76,6 +76,11 @@ export class PartiesRepository {
       this.prisma.request.count({ where: { clientId: id } }),
     ]);
     return transactions + invoices + deals + requests;
+  }
+
+  /** الأرشفة — العنصر يختفي من القوايم والاختيارات وكل حركاته تفضل زي ما هي. */
+  archive(id: number) {
+    return this.prisma.party.update({ where: { id }, data: { hidden: true } });
   }
 
   async removeCascade(id: number) {

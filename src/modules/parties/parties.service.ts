@@ -4,6 +4,7 @@ import { BalancesService } from '../balances/balances.service';
 import { CreatePartyDto, LinkPartyDto, UpdatePartyDto } from './dto/party.dto';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { PartiesRepository } from './parties.repository';
+import { deleteConflict, type DeleteMode } from '../../common/delete-mode';
 
 @Injectable()
 export class PartiesService {
@@ -195,14 +196,21 @@ export class PartiesService {
   update(id: string, dto: UpdatePartyDto) { return this.repo.update(id, dto); }
   getDirectSaleParty() { return this.repo.findOrCreateDirectSaleParty(); }
 
-  async remove(id: string, cascade: boolean) {
+  async remove(id: string, mode: DeleteMode) {
     const party = await this.repo.findRawByUid(id);
-    if (!cascade) {
-      const related = await this.repo.countRelated(party.id);
-      if (related > 0) {
-        throw new ConflictException(`يوجد ${related} حركة/فاتورة/صفقة مرتبطة بهذا الطرف — احذفها أولاً أو أكّد حذفها معه`);
-      }
-    }
-    return this.repo.removeCascade(party.id);
+    const related = await this.repo.countRelated(party.id);
+
+    // Nothing points at it — a real delete leaves nothing behind, so don't ask.
+    if (related === 0) return this.repo.removeCascade(party.id);
+
+    // "شيله وسيب المعاملات" — the ledger, invoices and deals stay exactly as they are
+    // and keep reading the name through the relation; the party just leaves the lists.
+    if (mode === 'archive') return this.repo.archive(party.id);
+
+    // Cascading a party is genuinely destructive: it takes its invoices, deals, requests
+    // and its whole ledger with it. Always reachable, but never the default.
+    if (mode === 'cascade') return this.repo.removeCascade(party.id);
+
+    throw new ConflictException(deleteConflict(`«${party.name}»`, related, true));
   }
 }

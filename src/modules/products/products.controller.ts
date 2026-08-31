@@ -5,6 +5,7 @@ import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsService } from './products.service';
+import { parseDeleteMode } from '../../common/delete-mode';
 
 @Controller('products')
 @Permissions('inventory', 'invoices', 'settings', 'entry')
@@ -62,7 +63,7 @@ export class ProductsController {
 
   @Delete(':id')
   @Permissions('settings')
-  remove(@Param('id') id: string, @Query('cascade') cascade?: string) {
-    return this.service.remove(id, cascade === 'true');
+  remove(@Param('id') id: string, @Query('cascade') cascade?: string, @Query('archive') archive?: string) {
+    return this.service.remove(id, parseDeleteMode(cascade, archive));
   }
 }

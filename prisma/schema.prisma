@@ -250,6 +250,11 @@ model Product {
   unit String?
   service Boolean @default(false) // a charge/service line (نولون، تخليص…) — excluded from stock
 
+  // أرشفة: يختفي من القوايم والاختيارات، وفواتيره وحركاته القديمة تفضل زي ما هي.
+  // الفواتير بتشاور على الصنف بـ Restrict وعمود إجباري، فمفيش حذف حقيقي من غير ما
+  // ياخد الفواتير معاه — الأرشفة هي الطريقة الوحيدة "يتشال" والتاريخ يفضل سليم.
+  hidden Boolean @default(false)
+
   // Manually-set valuation price — when > 0, used as the warehouse-stock unit cost
   // instead of the computed weighted-average purchase price (see BalancesRepository).
   price Float @default(0)
