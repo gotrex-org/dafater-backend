@@ -8,7 +8,16 @@ import { InvoicesRepository } from './invoices.repository';
 export class InvoicesService {
   constructor(private repo: InvoicesRepository) {}
 
-  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string) { return this.repo.findAll(q, kind, partyId); }
+  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string, includeHidden = false) {
+    return this.repo.findAll(q, kind, partyId, includeHidden);
+  }
+
+  /** أرشفة/استعادة فاتورة — إخفاء من القوايم بس، الحركات والأرقام ما بتتلمسش. */
+  async setArchived(uid: string, archived: boolean) {
+    const inv = await this.repo.findByUid(uid);
+    if (!inv) throw new NotFoundException("Invoice not found");
+    return this.repo.setHidden(uid, archived);
+  }
 
   async findOne(id: string) {
     const inv = await this.repo.findOne(id);

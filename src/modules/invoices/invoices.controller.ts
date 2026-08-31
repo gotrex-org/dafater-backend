@@ -4,7 +4,7 @@ import { InvoiceKind } from '@prisma/client';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto, ManifestTabClosedDto } from './dto/invoices.dto';
+import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto, ManifestTabClosedDto, InvoiceArchivedDto } from './dto/invoices.dto';
 import { InvoicesService } from './invoices.service';
 
 @Controller('invoices')
@@ -13,8 +13,13 @@ export class InvoicesController {
   constructor(private service: InvoicesService) {}
 
   @Get()
-  findAll(@Query() q: PaginationQueryDto, @Query('kind') kind?: InvoiceKind, @Query('partyId') partyId?: string) {
-    return this.service.findAll(q, kind, partyId);
+  findAll(
+    @Query() q: PaginationQueryDto,
+    @Query('kind') kind?: InvoiceKind,
+    @Query('partyId') partyId?: string,
+    @Query('includeHidden') includeHidden?: string,
+  ) {
+    return this.service.findAll(q, kind, partyId, includeHidden === 'true');
   }
 
   @Get('next-no')
@@ -47,6 +52,14 @@ export class InvoicesController {
   @Get(':id/sheet')
   sheet(@Param('id') id: string) {
     return this.service.sheet(id);
+  }
+
+  // أرشفة/استعادة فاتورة — بتختفي من القوايم والتابات والبوابة، وحركاتها وأرقامها
+  // في كشف الحساب والتقارير بتفضل زي ما هي بالظبط.
+  @Patch(':id/archived')
+  @Permissions('invoices.edit')
+  setArchived(@Param('id') id: string, @Body() dto: InvoiceArchivedDto) {
+    return this.service.setArchived(id, dto.archived);
   }
 
   // تابات العربيات: تاب لكل عربية بأصنافها ومصاريفها في نافذتها الزمنية

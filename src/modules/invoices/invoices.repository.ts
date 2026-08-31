@@ -11,9 +11,11 @@ const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { 
 export class InvoicesRepository {
   constructor(private prisma: PrismaService) {}
 
-  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string) {
+  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string, includeHidden = false) {
     const where: any = {};
     if (kind) where.kind = kind;
+    // المؤرشفة تختفي من القوايم والتابات — إلا لما نطلبها صراحةً (شاشة الأرشيف).
+    if (!includeHidden) where.hidden = false;
     // فواتير طرف بعينه — بيستخدمها عرض «تابات فواتير العميل» بدل البحث بالاسم.
     if (partyId) where.party = { uid: partyId };
     if (q.search) where.OR = [
@@ -321,7 +323,8 @@ export class InvoicesRepository {
     const ids = await this.allowedPartyIds(partyUid);
     if (!ids) return [];
     return this.prisma.invoice.findMany({
-      where: { partyId: { in: ids }, fake: false },
+      // المؤرشفة مابتظهرش للعميل زي ما مابتظهرش في السيستم الداخلي.
+      where: { partyId: { in: ids }, fake: false, hidden: false },
       orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
       select: { uid: true, no: true, date: true, currency: true },
     });
@@ -336,6 +339,10 @@ export class InvoicesRepository {
       select: { partyId: true, fake: true },
     });
     return !!inv && !inv.fake && ids.includes(inv.partyId);
+  }
+
+  setHidden(uid: string, hidden: boolean) {
+    return this.prisma.invoice.update({ where: { uid }, data: { hidden }, select: { uid: true, no: true, hidden: true } });
   }
 
   findByUid(id: string) {

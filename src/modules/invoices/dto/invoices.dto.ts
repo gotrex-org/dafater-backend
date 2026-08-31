@@ -71,3 +71,8 @@ export class CommissionDto {
 export class ManifestTabClosedDto {
   @IsBoolean() closed: boolean;
 }
+
+// أرشفة/استعادة فاتورة
+export class InvoiceArchivedDto {
+  @IsBoolean() archived: boolean;
+}
