@@ -393,6 +393,11 @@ model Transaction {
   warehouse   Warehouse? @relation("TxWarehouse", fields: [warehouseId], references: [id], onDelete: SetNull)
   warehouseId Int?
 
+  // مصروف متثبّت على عربية بعينها — اتضاف من تاب العربية جوّه الفاتورة، فبيفضل فيها
+  // مهما اتغيّر تاريخه (بعكس المصاريف اللي التاب بياخدها بالنافذة الزمنية).
+  manifest   Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId Int?
+
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
 
@@ -408,6 +413,7 @@ model Transaction {
   @@index([treasuryId])
   @@index([date])
   @@index([groupId])
+  @@index([manifestId])
 }
 
 // ----------------------------- invoices -----------------------------
@@ -712,6 +718,8 @@ model Manifest {
   invoiceId   Int?
   clientName  String
   vehicleNo   String?
+  // مسمّى العربية (عربية الزيتون / عربية ديدي) — اسم متعارف عليه غير رقم اللوحة واسم السائق
+  vehicleLabel String?
   trailerNo   String?
   driverName  String?
   driverPhone String?
@@ -719,8 +727,14 @@ model Manifest {
   clearingAgent String?
   note        String?
 
-  items       ManifestItem[]
-  driverTrips DriverTrip[]
+  // قفل تاب العربية جوّه الفاتورة: بعد القفل التاب ما بيشيلش مصاريف جديدة بالتاريخ،
+  // والمصاريف اللي بعد كده بتروح للعربية اللي بعدها. مين قفل واتقفل امتى للسجل.
+  closedAt DateTime?
+  closedBy String?
+
+  items        ManifestItem[]
+  driverTrips  DriverTrip[]
+  transactions Transaction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -745,6 +759,8 @@ model Driver {
   phone      String?
   phone2     String?
   vehicleNo  String?
+  // مسمّى العربية — بيتعبّى تلقائيًا في الكشف والرحلة لما السائق يتختار
+  vehicleLabel String?
   trailerNo  String?
   note       String?
   createdAt  DateTime @default(now())
@@ -763,6 +779,8 @@ model DriverTrip {
 
   driverName    String
   vehicleNo     String?
+  // مسمّى العربية — بيظهر في بيان «عطلة عربية» على كشف حساب العميل
+  vehicleLabel  String?
   trailerNo     String?
   clientName    String
 

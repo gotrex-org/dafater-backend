@@ -84,6 +84,8 @@ export class TransactionsService {
           category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
           treasury: { connect: { uid: dto.treasuryId } },
           cashOut: amt, note: dto.note,
+          // اتضاف من تاب عربية → يتثبّت عليها فيفضل في تابها مهما اتغيّر تاريخه.
+          ...(dto.manifestId ? { manifest: { connect: { uid: dto.manifestId } } } : {}),
           ...(expenseGroupId ? { groupId: expenseGroupId } : {}),
         }];
         if (dto.partyId) {

@@ -23,14 +23,14 @@ export class ManifestsRepository {
     return paginate(this.prisma.manifest, q, {
       where,
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
     });
   }
 
   findOne(id: string) {
     return this.prisma.manifest.findUnique({
       where: { uid: id },
-      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
     });
   }
 
@@ -44,7 +44,7 @@ export class ManifestsRepository {
           { invoice: { party: { uid: partyUid } } },
         ],
       },
-      include: { items: true, driverTrips: { select: { arrivalDate: true } } },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
@@ -59,7 +59,7 @@ export class ManifestsRepository {
         invoice: invoiceId ? { connect: { uid: invoiceId } } : undefined,
         items: { create: items },
       },
-      include: { items: true },
+      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
     });
   }
 
@@ -76,15 +76,20 @@ export class ManifestsRepository {
   }
 
   async update(id: string, dto: UpdateManifestDto) {
-    const { items, date, ...rest } = dto;
+    // invoiceId بيتشال من الـ spread لأنه uid (نص) مش الـ FK الرقمي — لازم connect.
+    const { items, date, invoiceId, ...rest } = dto;
     return this.prisma.manifest.update({
       where: { uid: id },
       data: {
         ...rest,
         ...(date ? { date: new Date(date) } : {}),
+        // سلسلة فاضية = فك الربط بالفاتورة؛ undefined = ماتلمسش الربط.
+        ...(invoiceId !== undefined
+          ? { invoice: invoiceId ? { connect: { uid: invoiceId } } : { disconnect: true } }
+          : {}),
         ...(items !== undefined ? { items: { deleteMany: {}, createMany: { data: items } } } : {}),
       },
-      include: { items: true },
+      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
     });
   }
 

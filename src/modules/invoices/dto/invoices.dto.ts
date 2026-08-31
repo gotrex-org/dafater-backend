@@ -66,3 +66,8 @@ export class CommissionDto {
   @IsOptional() @IsNumber() commissionAmount?: number;
   @IsOptional() @IsString() commissionPartyId?: string;
 }
+
+// قفل/فتح تاب عربية جوّه الفاتورة
+export class ManifestTabClosedDto {
+  @IsBoolean() closed: boolean;
+}

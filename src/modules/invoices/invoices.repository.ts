@@ -11,9 +11,11 @@ const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { 
 export class InvoicesRepository {
   constructor(private prisma: PrismaService) {}
 
-  findAll(q: PaginationQueryDto, kind?: InvoiceKind) {
+  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string) {
     const where: any = {};
     if (kind) where.kind = kind;
+    // فواتير طرف بعينه — بيستخدمها عرض «تابات فواتير العميل» بدل البحث بالاسم.
+    if (partyId) where.party = { uid: partyId };
     if (q.search) where.OR = [
       { no: { contains: q.search } },
       { party: { name: { contains: q.search, mode: 'insensitive' } } },
@@ -167,6 +169,175 @@ export class InvoicesRepository {
     });
   }
 
+  // بيانات "شكل الشيت" للفاتورة: الحساب القديم قبلها، والسدادات اللي بعدها لحد الفاتورة
+  // اللي تليها لنفس الطرف، والباقي عليه — بنفس ترتيب كشف الحساب (date ثم createdAt).
+  async sheet(uid: string) {
+    const inv = await this.prisma.invoice.findUnique({
+      where: { uid },
+      select: {
+        id: true, no: true, date: true, kind: true, createdAt: true, currency: true,
+        party: {
+          select: {
+            id: true, opening: true,
+            linkedParty: { select: { id: true, opening: true } },
+            linkedFrom: { select: { id: true, opening: true } },
+          },
+        },
+      },
+    });
+    if (!inv) return null;
+
+    // الطرف المرتبط (عميل/مورد بكشف واحد) بيتحسب مع الطرف زي كشف الحساب بالظبط.
+    const partner = inv.party.linkedParty ?? inv.party.linkedFrom ?? null;
+    const partyIds = partner ? [inv.party.id, partner.id] : [inv.party.id];
+    const opening = (inv.party.opening || 0) + (partner?.opening || 0);
+
+    const txns = await this.prisma.transaction.findMany({
+      where: { partyId: { in: partyIds } },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: { uid: true, date: true, type: true, note: true, clientNote: true, debit: true, credit: true, cashIn: true, cashOut: true, invoiceId: true },
+    });
+
+    // نقطة البداية = أول حركة للفاتورة دي. الفاتورة الوهمية مالهاش حركات، فبنرجع لأول
+    // حركة بتاريخ أحدث من تاريخها.
+    let start = txns.findIndex((t) => t.invoiceId === inv.id);
+    if (start < 0) {
+      start = txns.findIndex((t) => t.date > inv.date);
+      if (start < 0) start = txns.length;
+    }
+
+    // نقطة النهاية = أول حركة للفاتورة اللي بعدها لنفس الطرف (أو آخر الكشف).
+    const nextInv = await this.prisma.invoice.findFirst({
+      where: {
+        partyId: { in: partyIds },
+        OR: [{ date: { gt: inv.date } }, { date: inv.date, createdAt: { gt: inv.createdAt } }],
+      },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, no: true, date: true },
+    });
+    let end = txns.length;
+    if (nextInv) {
+      // الفاتورة اللي بعدها وهمية؟ مالهاش حركات — فبنقفل الفترة عند تاريخها.
+      let i = txns.findIndex((t, idx) => idx > start && t.invoiceId === nextInv.id);
+      if (i < 0) i = txns.findIndex((t, idx) => idx > start && t.date >= nextInv.date);
+      if (i >= 0) end = i;
+    }
+
+    let previousBalance = opening;
+    for (let i = 0; i < start; i++) previousBalance += (txns[i].debit || 0) - (txns[i].credit || 0);
+
+    let remaining = previousBalance;
+    for (let i = start; i < end; i++) remaining += (txns[i].debit || 0) - (txns[i].credit || 0);
+
+    const isSale = inv.kind === InvoiceKind.SALE;
+    const win = txns.slice(start, end);
+
+    // السدادات = استلامات نقدية بس (فلوس عدّت فعلاً من/إلى خزنة). المرتجعات والخصومات
+    // والمصاريف بتفضل في كشف الحساب بره الفاتورة — زي الشيت بالظبط.
+    const payments = win
+      .filter((t) => ((isSale ? t.credit : t.debit) || 0) > 0 && ((t.cashIn || 0) > 0 || (t.cashOut || 0) > 0))
+      .map((t) => ({
+        id: t.uid,
+        date: t.date,
+        type: t.type,
+        note: t.note ?? null,
+        clientNote: t.clientNote ?? null,
+        amount: (isSale ? t.credit : t.debit) || 0,
+      }));
+    const paymentsTotal = payments.reduce((s, p) => s + p.amount, 0);
+
+    // نقل نقدية = رسوم نقل النقدية اللي بتتسجّل مع التحصيل (بتزوّد المستحق على الطرف).
+    const cashTransfer = win
+      .filter((t) => t.type === 'رسوم نقل')
+      .reduce((s, t) => s + ((isSale ? t.debit : t.credit) || 0), 0);
+
+    return {
+      previousBalance,
+      remaining,
+      cashTransfer,
+      payments,
+      paymentsTotal,
+      nextInvoiceNo: nextInv?.no ?? null,
+      currency: inv.currency,
+    };
+  }
+
+  // نفس أرقام الشيت بس بصياغة العميل — مقصورة على طرفه (أو الطرف المربوط بيه)، ومن غير
+  // أي بيانات داخلية (مخزن، عمولات، بيان التحصيل الداخلي).
+  async clientInvoice(partyUid: string, invoiceUid: string) {
+    const party = await this.prisma.party.findUnique({
+      where: { uid: partyUid },
+      select: { id: true, linkedPartyId: true, linkedFrom: { select: { id: true } } },
+    });
+    if (!party) return null;
+    const allowed = new Set<number>([party.id]);
+    if (party.linkedPartyId) allowed.add(party.linkedPartyId);
+    if (party.linkedFrom) allowed.add(party.linkedFrom.id);
+
+    const inv = await this.prisma.invoice.findUnique({
+      where: { uid: invoiceUid },
+      select: {
+        partyId: true, date: true, discount: true, fake: true, currency: true,
+        items: { select: { qty: true, price: true, product: { select: { name: true } } } },
+      },
+    });
+    // الفاتورة الوهمية مالهاش حركات — العميل مايشوفهاش أصلاً في كشفه.
+    if (!inv || inv.fake || !allowed.has(inv.partyId)) return null;
+
+    const s = await this.sheet(invoiceUid);
+    if (!s) return null;
+
+    const discount = inv.discount || 0;
+    const itemsTotal = inv.items.reduce((sum, it) => sum + it.qty * it.price, 0) - discount;
+    return {
+      date: inv.date,
+      currency: inv.currency,
+      items: inv.items.map((it) => ({ name: it.product.name, qty: it.qty, price: it.price })),
+      itemsTotal,
+      discount,
+      previousBalance: s.previousBalance,
+      cashTransfer: s.cashTransfer,
+      payments: s.payments.map((p) => ({ id: p.id, date: p.date, amount: p.amount, note: p.clientNote || 'استلام نقدية' })),
+      paymentsTotal: s.paymentsTotal,
+      remaining: s.remaining,
+    };
+  }
+
+  /** الأطراف اللي حساب العميل ده مسموح له يشوفها (هو + المرتبط بيه في كشف واحد). */
+  private async allowedPartyIds(partyUid: string): Promise<number[] | null> {
+    const party = await this.prisma.party.findUnique({
+      where: { uid: partyUid },
+      select: { id: true, linkedPartyId: true, linkedFrom: { select: { id: true } } },
+    });
+    if (!party) return null;
+    const ids = new Set<number>([party.id]);
+    if (party.linkedPartyId) ids.add(party.linkedPartyId);
+    if (party.linkedFrom) ids.add(party.linkedFrom.id);
+    return [...ids];
+  }
+
+  /** فواتير العميل نفسه — أقدم أولاً عشان ترتيب التابات في البوابة. الوهمية مستبعدة. */
+  async clientInvoiceList(partyUid: string) {
+    const ids = await this.allowedPartyIds(partyUid);
+    if (!ids) return [];
+    return this.prisma.invoice.findMany({
+      where: { partyId: { in: ids }, fake: false },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+      select: { uid: true, no: true, date: true, currency: true },
+    });
+  }
+
+  /** تأكيد إن الفاتورة دي فعلاً بتاعة العميل الداخل — قبل ما نرجّع أي تفاصيل. */
+  async invoiceBelongsToClient(partyUid: string, invoiceUid: string) {
+    const ids = await this.allowedPartyIds(partyUid);
+    if (!ids) return false;
+    const inv = await this.prisma.invoice.findUnique({
+      where: { uid: invoiceUid },
+      select: { partyId: true, fake: true },
+    });
+    return !!inv && !inv.fake && ids.includes(inv.partyId);
+  }
+
   findByUid(id: string) {
     return this.prisma.invoice.findUnique({ where: { uid: id }, select: { id: true } });
   }
@@ -298,5 +469,61 @@ export class InvoicesRepository {
     // Attribute every generated movement to the user, and stamp the USD exchange rate
     // (0 for EGP invoices) so the party's average rate can be weighted later.
     return txns.map((t) => ({ ...t, ...(createdById ? { createdById } : {}), ...(exchangeRate ? { exchangeRate } : {}) }));
+  }
+
+  // ---- تابات العربيات جوّه الفاتورة ----
+
+  /** الفاتورة + طرفها + بنودها + عربياتها مرتّبة بالتاريخ — مصدر تابات العربيات. */
+  invoiceWithManifests(uid: string) {
+    return this.prisma.invoice.findUnique({
+      where: { uid },
+      select: {
+        id: true, uid: true, no: true, date: true, currency: true, partyId: true,
+        items: { select: { qty: true, price: true, product: { select: { name: true } } } },
+        manifests: {
+          orderBy: [{ date: 'asc' }, { id: 'asc' }],
+          select: {
+            id: true, uid: true, no: true, date: true, vehicleNo: true, vehicleLabel: true,
+            driverName: true, note: true, closedAt: true, closedBy: true,
+            items: { select: { uid: true, name: true, qty: true } },
+          },
+        },
+      },
+    });
+  }
+
+  /**
+   * مصاريف مرشّحة للفاتورة: أي حركة مصروف متثبّتة على عربية من عربيات الفاتورة، أو
+   * مصروف مربوط بالفاتورة/بطرفها لسه مش متثبّت على عربية تانية. الفرز بالتاريخ عشان
+   * توزيعها على النوافذ الزمنية يبقى ترتيبه صح.
+   */
+  manifestExpenseCandidates(invoiceId: number, partyId: number, manifestIds: number[]) {
+    return this.prisma.transaction.findMany({
+      where: {
+        type: { startsWith: 'مصروف' },
+        OR: [
+          ...(manifestIds.length ? [{ manifestId: { in: manifestIds } }] : []),
+          { manifestId: null, OR: [{ invoiceId }, { partyId }] },
+        ],
+      },
+      orderBy: [{ date: 'asc' }, { id: 'asc' }],
+      select: {
+        uid: true, date: true, type: true, note: true, manifestId: true,
+        debit: true, cashOut: true, expAmt: true,
+        category: { select: { uid: true, name: true } },
+        treasury: { select: { uid: true, name: true } },
+      },
+    });
+  }
+
+  manifestForTab(uid: string) {
+    return this.prisma.manifest.findUnique({
+      where: { uid },
+      select: { id: true, uid: true, no: true, closedAt: true, closedBy: true, invoiceId: true },
+    });
+  }
+
+  setManifestClosed(id: number, closedAt: Date | null, closedBy: string | null) {
+    return this.prisma.manifest.update({ where: { id }, data: { closedAt, closedBy } });
   }
 }
