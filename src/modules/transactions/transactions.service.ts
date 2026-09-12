@@ -304,14 +304,16 @@ export class TransactionsService {
         const transferGroupId = crypto.randomUUID();
         // المُحوِّل (from) الفلوس تتسجّله (credit/له)، والمستلم (to) تتسجّل عليه (debit/عليه).
         // الرِجلين بيتعملوا ذرّيًا (createPair) عشان يستحيل يتحرّك طرف من غير التاني.
+        // صيغة البيان متفق عليها كده: اللي في عمود «له» بيتكتب «تحويل من»، واللي في
+        // «عليه» بيتكتب «تحويل إلى» — يبقى الطرف المذكور في السطر هو الطرف التاني.
         const [leg1] = await this.repo.createPair(
           {
             ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId } },
-            credit: amt, note: dto.note || `تحويل إلى ${to.name}`, groupId: transferGroupId,
+            credit: amt, note: dto.note || `تحويل من ${to.name}`, groupId: transferGroupId,
           },
           {
             ...eb, date, type: 'تحويل بين أطراف', party: { connect: { uid: dto.partyId2 } },
-            debit: amt, note: dto.note || `تحويل من ${from.name}`, groupId: transferGroupId,
+            debit: amt, note: dto.note || `تحويل إلى ${from.name}`, groupId: transferGroupId,
           },
         );
         this.logTxn(user, 'CREATE', leg1.uid, `تحويل ${amt} ج من ${from.name} إلى ${to.name}`);

@@ -23,6 +23,7 @@ export class ManifestsService {
         nationalId: dto.driverNID || undefined,
         phone: dto.driverPhone || undefined,
         vehicleNo: dto.vehicleNo || undefined,
+        vehicleLabel: dto.vehicleLabel || undefined,
         trailerNo: dto.trailerNo || undefined,
       }).catch(() => {});
     }

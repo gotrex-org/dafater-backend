@@ -14,6 +14,7 @@ export class CreateDriverDto {
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() phone2?: string;
   @IsOptional() @IsString() vehicleNo?: string;
+  @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;
   @IsOptional() @IsString() note?: string;
 }
@@ -24,6 +25,7 @@ export class UpdateDriverDto {
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() phone2?: string;
   @IsOptional() @IsString() vehicleNo?: string;
+  @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;
   @IsOptional() @IsString() note?: string;
 }

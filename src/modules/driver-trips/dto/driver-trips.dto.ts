@@ -5,6 +5,7 @@ export class CreateDriverTripDto {
   @IsOptional() @IsString() partyId?: string;
   @IsString() driverName: string;
   @IsOptional() @IsString() vehicleNo?: string;
+  @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;
   @IsOptional() @IsString() clientName?: string;
   @IsDateString() departureDate: string;
@@ -21,6 +22,7 @@ export class UpdateDriverTripDto {
   @IsOptional() @IsString() partyId?: string;
   @IsOptional() @IsString() driverName?: string;
   @IsOptional() @IsString() vehicleNo?: string;
+  @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;
   @IsOptional() @IsString() clientName?: string;
   @IsOptional() @IsDateString() departureDate?: string;

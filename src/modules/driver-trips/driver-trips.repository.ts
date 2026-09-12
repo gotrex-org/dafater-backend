@@ -26,7 +26,7 @@ export class DriverTripsRepository {
 
   createTrip(data: {
     manifestId: number | null; partyId: number | null; driverName: string;
-    vehicleNo: string | null; trailerNo: string | null; clientName: string;
+    vehicleNo: string | null; vehicleLabel: string | null; trailerNo: string | null; clientName: string;
     departureDate: Date; agreedFreight: number; note: string | null;
   }) {
     return this.prisma.driverTrip.create({ data, include });
@@ -87,8 +87,8 @@ export class DriverTripsRepository {
     return this.prisma.transaction.update({ where: { id }, data: { debit } });
   }
 
-  updateTransactionAmountDate(id: number, debit: number, date: Date) {
-    return this.prisma.transaction.update({ where: { id }, data: { debit, date } });
+  updateTransactionAmountDate(id: number, debit: number, date: Date, note?: string) {
+    return this.prisma.transaction.update({ where: { id }, data: { debit, date, ...(note ? { note } : {}) } });
   }
 
   // Retires a delay/weight-diff charge transaction that's no longer owed

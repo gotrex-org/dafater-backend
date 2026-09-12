@@ -10,7 +10,7 @@ export class DriversService {
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
   findOne(id: string) { return this.repo.findOne(id); }
   create(dto: CreateDriverDto) { return this.repo.create(dto); }
-  upsertByName(name: string, data?: { nationalId?: string; phone?: string; vehicleNo?: string; trailerNo?: string }) { return this.repo.upsertByName(name, data); }
+  upsertByName(name: string, data?: { nationalId?: string; phone?: string; vehicleNo?: string; vehicleLabel?: string; trailerNo?: string }) { return this.repo.upsertByName(name, data); }
   update(id: string, dto: UpdateDriverDto) { return this.repo.update(id, dto); }
   remove(id: string) { return this.repo.remove(id); }
 

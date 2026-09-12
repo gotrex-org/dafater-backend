@@ -61,7 +61,7 @@ export class DriversRepository {
     return this.prisma.driver.create({ data: dto });
   }
 
-  upsertByName(name: string, data?: { nationalId?: string; phone?: string; vehicleNo?: string; trailerNo?: string }) {
+  upsertByName(name: string, data?: { nationalId?: string; phone?: string; vehicleNo?: string; vehicleLabel?: string; trailerNo?: string }) {
     const extra = data ? Object.fromEntries(Object.entries(data).filter(([, v]) => !!v)) : {};
     return this.prisma.driver.upsert({
       where: { name },

@@ -36,6 +36,7 @@ export class DriverTripsService {
       partyId,
       driverName: dto.driverName.trim(),
       vehicleNo: dto.vehicleNo?.trim() || null,
+      vehicleLabel: dto.vehicleLabel?.trim() || null,
       trailerNo: dto.trailerNo?.trim() || null,
       clientName: resolvedClientName,
       departureDate: new Date(dto.departureDate),
@@ -44,7 +45,11 @@ export class DriverTripsService {
     });
 
     // auto-register the driver in the drivers registry (upsert by name — no-op if already exists)
-    this.driversService.upsertByName(dto.driverName.trim()).catch(() => {});
+    this.driversService.upsertByName(dto.driverName.trim(), {
+      vehicleNo: dto.vehicleNo?.trim() || undefined,
+      vehicleLabel: dto.vehicleLabel?.trim() || undefined,
+      trailerNo: dto.trailerNo?.trim() || undefined,
+    }).catch(() => {});
 
     if (dto.initialPaid && dto.initialPaid > 0) {
       if (dto.initialPaid > dto.agreedFreight + 0.001)
@@ -133,6 +138,7 @@ export class DriverTripsService {
     return this.repo.update(uid, {
       ...(dto.driverName !== undefined ? { driverName: dto.driverName.trim() } : {}),
       ...(dto.vehicleNo !== undefined ? { vehicleNo: dto.vehicleNo.trim() || null } : {}),
+      ...(dto.vehicleLabel !== undefined ? { vehicleLabel: dto.vehicleLabel.trim() || null } : {}),
       ...(dto.trailerNo !== undefined ? { trailerNo: dto.trailerNo.trim() || null } : {}),
       ...(dto.clientName !== undefined ? { clientName: dto.clientName.trim() } : {}),
       ...(dto.departureDate !== undefined ? { departureDate: new Date(dto.departureDate) } : {}),
@@ -222,18 +228,22 @@ export class DriverTripsService {
     let delayTxId: number | null = trip.delayTxId ?? null;
     let weightDiffTxId: number | null = trip.weightDiffTxId ?? null;
 
+    // بيان العطلة على كشف حساب العميل: عطلة عربية - اسم السائق - (مسمّى العربية)
+    const delayNote = `عطلة عربية - ${trip.driverName}${trip.vehicleLabel ? ` - (${trip.vehicleLabel})` : ''}`;
+
     if (delayTxId && delayFee <= 0) {
       await this.repo.deleteTransaction(delayTxId);
       delayTxId = null;
     } else if (delayTxId && delayFee > 0) {
-      await this.repo.updateTransactionAmountDate(delayTxId, delayFee, arrival);
+      // بنحدّث البيان كمان — عشان تعديل الوصول بعد ما اتحط مسمّى للعربية يصحّح السطر القديم
+      await this.repo.updateTransactionAmountDate(delayTxId, delayFee, arrival, delayNote);
     } else if (!delayTxId && delayFee > 0 && trip.partyId) {
       const tx = await this.repo.createDelayTx({
         date: arrival,
         type: 'truckDelay',
         debit: delayFee,
         partyId: trip.partyId,
-        note: `عطلة عربية (${trip.driverName})`,
+        note: delayNote,
       });
       delayTxId = tx.id;
     }
