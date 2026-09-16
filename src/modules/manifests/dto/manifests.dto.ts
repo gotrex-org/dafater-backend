@@ -1,5 +1,10 @@
 import { Type } from 'class-transformer';
-import { IsArray, IsDateString, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsDateString, IsIn, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+
+// مصدر العربية — OURS بتكمّل السلسلة (كشف سائق + تخليص وجمارك)،
+// و CLIENT_OFFICE مكتب شحن تابع للعميل (اسم بس).
+export type VehicleSourceDto = 'OURS' | 'CLIENT_OFFICE';
+const VEHICLE_SOURCES: VehicleSourceDto[] = ['OURS', 'CLIENT_OFFICE'];
 
 export class ManifestItemDto {
   @IsString() name: string;
@@ -17,6 +22,8 @@ export class CreateManifestDto {
   @IsOptional() @IsString() driverPhone?: string;
   @IsOptional() @IsString() driverNID?: string;
   @IsOptional() @IsString() clearingAgent?: string;
+  @IsOptional() @IsIn(VEHICLE_SOURCES) vehicleSource?: VehicleSourceDto;
+  @IsOptional() @IsString() shippingOffice?: string; // لما تكون العربية من مكتب العميل
   @IsOptional() @IsString() note?: string;
   @IsArray() @ValidateNested({ each: true }) @Type(() => ManifestItemDto) items: ManifestItemDto[];
 }
@@ -34,6 +41,8 @@ export class UpdateManifestDto {
   @IsOptional() @IsString() driverPhone?: string;
   @IsOptional() @IsString() driverNID?: string;
   @IsOptional() @IsString() clearingAgent?: string;
+  @IsOptional() @IsIn(VEHICLE_SOURCES) vehicleSource?: VehicleSourceDto;
+  @IsOptional() @IsString() shippingOffice?: string;
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ManifestItemDto) items?: ManifestItemDto[];
 }

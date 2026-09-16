@@ -126,6 +126,25 @@ export class DriverTripsService {
 
   async update(uid: string, dto: UpdateDriverTripDto) {
     await this.findOne(uid);
+
+    // ربط/فك ربط بكشف عربية. الكشف اللي عربيته من مكتب العميل مالوش رحلة سائق
+    // عندنا، فبنمنع الربط بدل ما يحصل بالغلط ويفضل معلّق.
+    let manifestId: number | null | undefined = undefined;
+    if ('manifestId' in dto) {
+      if (!dto.manifestId) {
+        manifestId = null;
+      } else {
+        const m = await this.repo.findManifestByUid(dto.manifestId);
+        if (!m) throw new NotFoundException('الكشف مش موجود');
+        if (m.vehicleSource !== 'OURS') {
+          throw new BadRequestException(
+            `كشف رقم ${m.no} خروجه من مكتب شحن — مالوش كشف سائق عندنا`,
+          );
+        }
+        manifestId = m.id;
+      }
+    }
+
     let partyId: number | null | undefined = undefined;
     if ('partyId' in dto) {
       if (!dto.partyId) {
@@ -145,6 +164,7 @@ export class DriverTripsService {
       ...(dto.agreedFreight !== undefined ? { agreedFreight: dto.agreedFreight } : {}),
       ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
       ...(partyId !== undefined ? { partyId } : {}),
+      ...(manifestId !== undefined ? { manifestId } : {}),
     });
   }
 

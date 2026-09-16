@@ -12,7 +12,22 @@ export class ManifestsService {
   ) {}
 
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
-  findOne(id: string) { return this.repo.findOne(id); }
+  /**
+   * الكشف + إجمالي تخليصه. بنجمع حركات الجمارك هنا ونشيل الحركات الخام من الرد —
+   * الشاشة محتاجة الإجمالي بس، مش كل حركة.
+   */
+  async findOne(id: string) {
+    const m: any = await this.repo.findOne(id);
+    if (!m) return m;
+    const { transactions, clearingAgentParty, ...rest } = m;
+    const total = (transactions ?? []).reduce((s: number, t: any) => s + (t.credit || 0), 0);
+    return {
+      ...rest,
+      clearance: total || clearingAgentParty
+        ? { total, agent: clearingAgentParty ?? null }
+        : null,
+    };
+  }
   findForParty(partyUid: string) { return this.repo.findForParty(partyUid); }
 
   async create(dto: CreateManifestDto) {

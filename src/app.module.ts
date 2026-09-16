@@ -36,6 +36,7 @@ import { ReportsModule } from './modules/reports/reports.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
 import { WarehouseExpensesModule } from './modules/warehouse-expenses/warehouse-expenses.module';
+import { ClearanceModule } from './modules/clearance/clearance.module';
 import { AssistantModule } from './modules/assistant/assistant.module';
 
 @Module({
@@ -80,6 +81,7 @@ import { AssistantModule } from './modules/assistant/assistant.module';
     FinanceModule,
     DiscountsModule,
     WarehouseExpensesModule,
+    ClearanceModule,
     AssistantModule,
   ],
   providers: [

@@ -32,6 +32,15 @@ enum PartyRole {
   SUPPLIER
   AGENT // صاحب عمولة
   PERSON // صاحب عهدة (موظف أو أي شخص شايل فلوس أمانة/سلف)
+  CLEARANCE // مخلّص جمركي — حساب جاري زي المورد، بيصرف على الجمارك ويتحاسب
+}
+
+// نوع خروج البضاعة — هو اللي بيحدد السلسلة بتكمل ولا لأ:
+//   OURS          خروج من المخزن → ليها كشف سائق وتخليص وجمارك
+//   CLIENT_OFFICE مكتب شحن → اسم المكتب بس، مفيش كشف سائق ولا تخليص
+enum VehicleSource {
+  OURS
+  CLIENT_OFFICE
 }
 
 enum PartyType {
@@ -197,6 +206,7 @@ model Party {
   dollarTxs        DollarAgentTx[]
   driverTrips      DriverTrip[]
   loans            Loan[]
+  clearedManifests Manifest[] @relation("ManifestClearingAgent")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -462,6 +472,9 @@ model Invoice {
 
   @@index([kind])
   @@index([partyId])
+  // الـ index ده موجود في الداتابيز من migration الأرشفة — متكتوب هنا عشان الـ schema
+  // تطابق الواقع، من غيره كل migration جديدة بتحاول تشيله.
+  @@index([hidden])
   // رقم فاتورة فريد لكل طرف — يمنع تكرار الرقم من تسابق nextNo (اقرأ max ثم +1).
   @@unique([partyId, no])
 }
@@ -493,6 +506,10 @@ model InvoiceItem {
 
   @@index([invoiceId])
   @@index([commissionPartyId])
+  // موجودين في الداتابيز من migration خزن الناولون والشاي — مكتوبين هنا عشان
+  // الـ schema تطابق الواقع (زي @@index([hidden]) في Invoice).
+  @@index([freightTreasuryId])
+  @@index([teaTreasuryId])
 }
 
 // ------------------------------ returns ------------------------------
@@ -727,8 +744,18 @@ model Manifest {
   driverName  String?
   driverPhone String?
   driverNID   String?
+  // اسم المخلّص القديم كنص حر — متسيب للداتا القديمة. الربط الحقيقي بقى
+  // clearingAgentId على طرف بدور CLEARANCE عشان يبقى ليه حساب جاري.
   clearingAgent String?
+  clearingAgentParty Party? @relation("ManifestClearingAgent", fields: [clearingAgentId], references: [id], onDelete: SetNull)
+  clearingAgentId    Int?
   note        String?
+
+  // نوع الخروج. الافتراضي OURS (خروج من المخزن) عشان كل الكشوفات القديمة تفضل
+  // زي ما هي. شوف enum VehicleSource فوق.
+  vehicleSource  VehicleSource @default(OURS)
+  // اسم مكتب الشحن لما يكون الخروج من مكتب شحن — اسم بس، مش طرف له حساب.
+  shippingOffice String?
 
   // قفل تاب العربية جوّه الفاتورة: بعد القفل التاب ما بيشيلش مصاريف جديدة بالتاريخ،
   // والمصاريف اللي بعد كده بتروح للعربية اللي بعدها. مين قفل واتقفل امتى للسجل.
@@ -738,6 +765,8 @@ model Manifest {
   items        ManifestItem[]
   driverTrips  DriverTrip[]
   transactions Transaction[]
+
+  @@index([clearingAgentId])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

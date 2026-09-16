@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CLEARANCE_EXPENSE_TYPE as CLEARANCE_TYPE } from '../clearance/clearance.repository';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
@@ -27,10 +28,18 @@ export class ManifestsRepository {
     });
   }
 
+  // شاشة الكشف بتعرض شريط السلسلة (فاتورة ← كشف ← رحلة ← تخليص)، فمحتاجة
+  // uid الرحلة عشان تفتحها، والمخلّص وحركات الجمارك عشان تجمعها.
   findOne(id: string) {
     return this.prisma.manifest.findUnique({
       where: { uid: id },
-      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
+      include: {
+        items: true,
+        driverTrips: { select: { uid: true, arrivalDate: true, driverName: true } },
+        invoice: { select: { uid: true, no: true, date: true, kind: true } },
+        clearingAgentParty: { select: { uid: true, name: true } },
+        transactions: { where: { type: CLEARANCE_TYPE }, select: { credit: true } },
+      },
     });
   }
 

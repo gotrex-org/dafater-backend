@@ -19,6 +19,9 @@ export class CreateDriverTripDto {
 }
 
 export class UpdateDriverTripDto {
+  // ربط الرحلة بكشف عربية (uid) — سلسلة فاضية معناها فك الربط. ده اللي بيسمح
+  // إنك تعمل الرحلة والكشف كل واحد لوحده وتربطهم بعدين.
+  @IsOptional() @IsString() manifestId?: string;
   @IsOptional() @IsString() partyId?: string;
   @IsOptional() @IsString() driverName?: string;
   @IsOptional() @IsString() vehicleNo?: string;
