@@ -87,7 +87,13 @@ export class BalancesRepository {
     return Promise.all(accounts.map(async (a) => ({ ...a, balance: await this.treasuryBalance(a.id) })));
   }
 
-  async stockOf(productId: number, warehouseId: number): Promise<number> {
+  /**
+   * رصيد الصنف. `warehouseId` اختياري: من غيره بيرجّع الإجمالي الموجود في كل
+   * المخازن مع بعض — وده اللي بيتعرض في كارت الصنف.
+   */
+  async stockOf(productId: number, warehouseId?: number): Promise<number> {
+    // `undefined` في شرط Prisma معناها «متفلترش بالحقل ده» — فنفس الكود بيخدم
+    // مخزن واحد والإجمالي.
     const items = await this.prisma.invoiceItem.findMany({
       where: { productId, invoice: { warehouseId, fake: false } },
       select: { qty: true, invoice: { select: { kind: true } } },
@@ -141,7 +147,12 @@ export class BalancesRepository {
         // computed weighted-average purchase cost — lets you value stock directly
         // instead of relying on purchase-invoice history (which may not exist yet).
         const cost = p.price > 0 ? p.price : await this.avgCost(p.id);
-        return { productId: p.uid, name: p.name, unit: p.unit, qty, cost, value: qty * cost };
+        // سعر الشراء/البيع الثابت بيتبعت مع الرصيد عشان يتعرض ويتعدّل من شاشة
+        // المخازن على طول — هما نفسهم اللي بيتحطّوا تلقائيًا في سطر الفاتورة.
+        return {
+          productId: p.uid, name: p.name, unit: p.unit, qty, cost, value: qty * cost,
+          purchasePrice: p.purchasePrice, salePrice: p.salePrice,
+        };
       }),
     );
     return rows;

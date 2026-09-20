@@ -269,6 +269,12 @@ model Product {
   // instead of the computed weighted-average purchase price (see BalancesRepository).
   price Float @default(0)
 
+  // سعر شراء/بيع ثابت للصنف — بيتحط تلقائيًا في سطر الفاتورة لما تختار الصنف، وقابل
+  // للتعديل على الفاتورة من غير ما يتغيّر هنا. 0 = مفيش سعر ثابت (السطر يفضل فاضي).
+  // مستقلّين عن `price` اللي فوق — ده سعر تقييم المخزون، ودول أسعار التعامل.
+  purchasePrice Float @default(0)
+  salePrice     Float @default(0)
+
   // Auto-appear as a blank line on every new invoice of that kind (independent of
   // `service` — a pinned line is usually also a service line, but the two are separate
   // switches: `service` controls stock exclusion, these control which invoices it shows on).
@@ -466,6 +472,8 @@ model Invoice {
   transactions Transaction[]
   manifests    Manifest[]
   returns      Return[]
+  // رحلة السواق المربوطة بالفاتورة دي (واحد لواحد) — شوف DriverTrip.invoiceId
+  driverTrip   DriverTrip? @relation("TripInvoice")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -808,6 +816,13 @@ model DriverTrip {
 
   party         Party?    @relation(fields: [partyId], references: [id], onDelete: SetNull)
   partyId       Int?
+
+  // الفاتورة اللي الناولون اتحصّل فيها من العميل. رحلة واحدة = فاتورة واحدة، فالعمود
+  // unique. اللي بيتدفع للسواق هنا (`agreedFreight`) واللي بيتحصّل من العميل بند
+  // «ناولون» على الفاتورة دي — الفرق بينهم مكسب النقلة. الربط صريح عشان سلسلة
+  // (رحلة ← كشف عربية ← فاتورة) مش مليانة في الداتا القديمة.
+  invoice       Invoice?  @relation("TripInvoice", fields: [invoiceId], references: [id], onDelete: SetNull)
+  invoiceId     Int?      @unique
 
   driverName    String
   vehicleNo     String?

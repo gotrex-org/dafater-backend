@@ -63,8 +63,8 @@ const DELETE_FETCH: Record<
     if (!txn) return null;
     return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId }, include }) : [txn];
   },
-  invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, party: { select: { name: true } }, warehouse: { select: { name: true } } } }),
-  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, client: { select: { name: true } }, supplier: { select: { name: true } } } }),
+  invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, party: { select: { name: true } }, warehouse: { select: { name: true } }, treasury: { select: { name: true } } } }),
+  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, client: { select: { name: true } }, supplier: { select: { name: true } }, treasury: { select: { name: true } } } }),
   manifests:            (p, uid) => p.manifest.findUnique({ where: { uid }, include: { items: true } }),
   'driver-trips':       (p, uid) => p.driverTrip.findUnique({ where: { uid }, include: { payments: true } }),
   parties:              (p, uid) => p.party.findUnique({ where: { uid }, include: { transactions: true, requests: { include: { items: true } } } }),
@@ -180,6 +180,30 @@ function computeInvoiceLikeDiff(
 // Build a human sentence describing the record — what it is, its quantity, and for
 // whom — from the full snapshot (available for create/update/delete alike). Shown as
 // the activity-log row's "التفاصيل" so you can read what happened without opening it.
+// المبلغ بشكل مقروء مع عملة الفاتورة.
+function fmtAmount(v: any, currency?: string): string {
+  return `${Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} ${currency === 'USD' ? '$' : 'ج.م'}`;
+}
+
+// إجمالي الأصناف والمدفوع — بيتحسبوا من الـ snapshot مش محفوظين على الفاتورة.
+function moneyTxt(s: any): string {
+  const items = Array.isArray(s.items) ? s.items : [];
+  const total = items.reduce((t: number, it: any) => t + (Number(it.qty) || 0) * (Number(it.price) || 0), 0);
+  const paid = Number(s.paid) || 0;
+  const parts: string[] = [];
+  if (total) parts.push(`إجمالي ${fmtAmount(total, s.currency)}`);
+  if (paid) parts.push(`مدفوع ${fmtAmount(paid, s.currency)}`);
+  return parts.length ? ' — ' + parts.join(' · ') : '';
+}
+
+// الخزنة اللي المبلغ خرج/دخل منها، والمخزن اللي البضاعة اتحركت فيه.
+function placeTxt(s: any): string {
+  const parts: string[] = [];
+  if (s.treasury?.name) parts.push(`خزنة ${s.treasury.name}`);
+  if (s.warehouse?.name) parts.push(`مخزن ${s.warehouse.name}`);
+  return parts.length ? ' — ' + parts.join(' · ') : '';
+}
+
 function buildSummary(entity: string, snap: any): string | null {
   if (!snap || Array.isArray(snap)) return null; // transactions handled separately
   const s = snap;
@@ -189,11 +213,13 @@ function buildSummary(entity: string, snap: any): string | null {
   switch (entity) {
     case 'adjustments':
       return `${s.product?.name ?? 'صنف'} ${s.qty > 0 ? '+' : ''}${n(s.qty)}${s.warehouse?.name ? ' — ' + s.warehouse.name : ''}`;
-    case 'invoices':
-      return `فاتورة ${s.kind === 'SALE' ? 'بيع' : 'شراء'} #${n(s.no)}${s.party?.name ? ' — ' + s.party.name : ''}${itemsTxt}`;
+    case 'invoices': {
+      const who = s.party?.name ? ` — ${s.kind === 'SALE' ? 'العميل' : 'المورد'}: ${s.party.name}` : '';
+      return `فاتورة ${s.kind === 'SALE' ? 'بيع' : 'شراء'} #${n(s.no)}${who}${itemsTxt}${moneyTxt(s)}${placeTxt(s)}`;
+    }
     case 'deals': {
       const who = [s.client?.name ? `عميل ${s.client.name}` : '', s.supplier?.name ? `مورد ${s.supplier.name}` : ''].filter(Boolean).join(' / ');
-      return `بيع خارجي #${n(s.no)}${who ? ' — ' + who : ''}${itemsTxt}`;
+      return `بيع خارجي #${n(s.no)}${who ? ' — ' + who : ''}${itemsTxt}${moneyTxt(s)}${placeTxt(s)}`;
     }
     case 'loans':
       return `عارية: ${s.product?.name ?? 'صنف'} ${n(s.qty)}${s.borrowerName || s.party?.name ? ' — ' + (s.borrowerName || s.party?.name) : ''}`;

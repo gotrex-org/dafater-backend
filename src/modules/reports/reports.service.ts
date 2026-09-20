@@ -112,33 +112,105 @@ export class ReportsService {
       .sort((a, b) => (b.daysSince || 0) - (a.daysSince || 0));
   }
 
-  // Headline totals for the period.
+  // Headline totals for the period — التجارة (بضاعة) بس.
+  //
+  // النشاطين بيمرّوا على نفس جدول الفواتير: بنود البضاعة نشاط التجارة، وبنود الخدمات
+  // (`Product.service` — ناولون/تحميل/شفتنة…) نشاط الشحن. من غير الفصل ده الناولون
+  // بيتجمّع مع البضاعة، فالمشتريات تطلع منفوخة والفرق بينها وبين المبيعات ملوش معنى.
+  // `sales`/`purchases` هنا بضاعة بس؛ بنود الخدمات بترجع في `services` وتفصيلها في
+  // shippingSummary(). أي حاسب تاني (الداشبورد، profitLoss) بياخد أرقام التجارة صح.
   async summary(from?: string, to?: string) {
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
       where: { fake: false, ...(date ? { date } : {}) },
-      select: { kind: true, items: { select: { qty: true, price: true } } },
+      select: {
+        kind: true,
+        items: { select: { qty: true, price: true, freight: true, tea: true, product: { select: { service: true } } } },
+      },
     });
     let sales = 0, purchases = 0, salesCount = 0, purchasesCount = 0;
+    // الناولون الداخلي والشاي على بنود الشراء — تكاليف بتتضاف على تكلفة الصنف (landed cost).
+    let addedCosts = 0;
+    // بنود الخدمات: على فاتورة البيع = محصّل من العميل، وعلى الشراء = مدفوع.
+    let servicesCollected = 0, servicesPaid = 0;
     for (const inv of invoices) {
-      const total = inv.items.reduce((s, it) => s + it.qty * it.price, 0);
-      if (inv.kind === InvoiceKind.SALE) { sales += total; salesCount += 1; }
-      else { purchases += total; purchasesCount += 1; }
+      let goods = 0, services = 0, extra = 0;
+      for (const it of inv.items) {
+        if (it.product?.service) services += it.qty * it.price;
+        else goods += it.qty * it.price;
+        extra += (it.freight || 0) + (it.tea || 0);
+      }
+      if (inv.kind === InvoiceKind.SALE) {
+        sales += goods; salesCount += 1; servicesCollected += services;
+      } else {
+        purchases += goods; purchasesCount += 1; servicesPaid += services; addedCosts += extra;
+      }
     }
     const returns = await this.prisma.return.findMany({
       where: date ? { date } : {},
-      select: { kind: true, items: { select: { qty: true, price: true } } },
+      select: { kind: true, items: { select: { qty: true, price: true, product: { select: { service: true } } } } },
     });
     let salesReturns = 0, purchaseReturns = 0;
     for (const r of returns) {
-      const total = r.items.reduce((s, it) => s + it.qty * it.price, 0);
+      const total = r.items.reduce((s, it) => (it.product?.service ? s : s + it.qty * it.price), 0);
       if (r.kind === InvoiceKind.SALE) salesReturns += total; else purchaseReturns += total;
     }
     return {
       sales, purchases, salesCount, purchasesCount,
       salesReturns, purchaseReturns,
+      addedCosts,
+      // تكلفة البضاعة الحقيقية عليك = سعر الشراء + الناولون الداخلي + الشاي
+      landedPurchases: purchases + addedCosts,
       netSales: sales - salesReturns,
-      grossProfit: (sales - salesReturns) - (purchases - purchaseReturns),
+      grossProfit: (sales - salesReturns) - (purchases + addedCosts - purchaseReturns),
+      services: { collected: servicesCollected, paid: servicesPaid },
+    };
+  }
+
+  // الشحن — نشاط التريلات لوحده. الإيراد بيتسجّل كبنود خدمات على فاتورة البيع
+  // (ناولون/تحميل/شفتنة…)، والتكلفة في كشف السائق (`agreedFreight`) والجمارك ومصاريف
+  // المخزن. العطلة وفرق الوزن محمولين على العميل فبيتحسبوا إيراد.
+  async shippingSummary(from?: string, to?: string) {
+    const date = this.range(from, to);
+    const s = await this.summary(from, to);
+
+    const trips = await this.prisma.driverTrip.aggregate({
+      where: date ? { departureDate: date } : {},
+      _sum: { agreedFreight: true, delayFee: true, weightDiffAmount: true },
+      _count: true,
+    });
+    const driverFreight = trips._sum.agreedFreight || 0;
+    const delay = trips._sum.delayFee || 0;
+    const weightDiff = trips._sum.weightDiffAmount || 0;
+
+    const net = (agg: { _sum: { cashOut: number | null; cashIn: number | null } }) =>
+      (agg._sum.cashOut || 0) - (agg._sum.cashIn || 0);
+
+    // 'جمارك' = CLEARANCE_EXPENSE_TYPE. 'سداد مخلّص' سداد لحساب المخلّص مش مصروف
+    // جديد، فمش داخل هنا عشان مايتعدّش مرتين.
+    const customsAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'جمارك', ...(date ? { date } : {}) },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    const warehouseAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    const customs = net(customsAgg);
+    // 'مصروف مخزن' مخلوط: تحميل (تكلفة نقلة) مع إيجار ومرتبات (مصاريف عامة). مفيش
+    // في الداتا حاجة تفصلهم، فبيرجع للعرض بس ومش داخل في `paid` عشان ميضخّمش تكلفة
+    // الشحن بمصاريف مالهاش علاقة بالنقلة.
+    const warehouse = net(warehouseAgg);
+
+    const collected = s.services.collected + delay + weightDiff;
+    const paid = driverFreight + s.services.paid + customs;
+    return {
+      collected, paid, profit: collected - paid,
+      trips: trips._count,
+      // التفصيل — عشان تقدر تشوف أي رقم جاي منين وتكشف أي إدخال غلط
+      income: { invoiceServices: s.services.collected, delay, weightDiff },
+      costs: { driverFreight, invoiceServices: s.services.paid, customs },
+      warehouseNote: warehouse,
     };
   }
 

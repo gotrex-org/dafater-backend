@@ -8,6 +8,19 @@ function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+type TripInvoice = { items: { qty: number; price: number; product: { name: string } | null }[] } | null;
+
+// اللي بيتحصّل من العميل مقابل النقلة = بنود الخدمات على الفاتورة المربوطة، مقابل
+// `agreedFreight` اللي بيتدفع للسواق. الفرق هو مكسب النقلة.
+function tripMargin(invoice: TripInvoice, agreedFreight: number) {
+  const lines = (invoice?.items ?? []).map((it) => ({
+    name: it.product?.name ?? '—',
+    total: it.qty * it.price,
+  }));
+  const collected = lines.reduce((s, l) => s + l.total, 0);
+  return { collectedFreight: collected, collectedLines: lines, tripProfit: collected - agreedFreight };
+}
+
 @Injectable()
 export class DriverTripsService {
   constructor(
@@ -109,7 +122,11 @@ export class DriverTripsService {
       const remainingDelay      = Math.max(0, (t.delayFee ?? 0) - totalDelayPaid - totalAdvancePaid);
       const remainingWeightDiff = Math.max(0, (t.weightDiffAmount ?? 0) - totalWeightDiffPaid);
       const trulyClosed = !!t.arrivalDate && remainingDelay === 0 && remainingWeightDiff === 0;
-      return { ...t, totalFreightPaid, totalDelayPaid, totalAdvancePaid, totalWeightDiffPaid, remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed };
+      return {
+        ...t, totalFreightPaid, totalDelayPaid, totalAdvancePaid, totalWeightDiffPaid,
+        remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed,
+        ...tripMargin((t as any).invoice, t.agreedFreight),
+      };
     });
     let result = enriched;
     if (filters.status === 'open')   result = enriched.filter((t) => !t.arrivalDate || t.remainingDelay > 0 || t.remainingWeightDiff > 0);
@@ -121,7 +138,36 @@ export class DriverTripsService {
   async findOne(uid: string) {
     const trip = await this.repo.findByUid(uid);
     if (!trip) throw new NotFoundException('كشف السائق غير موجود');
-    return trip;
+    return { ...trip, ...tripMargin((trip as any).invoice, trip.agreedFreight) };
+  }
+
+  // الفواتير اللي ينفع تتربط بالرحلة: نفس العميل، فيها بند خدمة، ولسه متربطتش
+  // برحلة تانية (غير الفاتورة المربوطة حاليًا عشان تفضل ظاهرة في الاختيارات).
+  async invoiceCandidates(uid: string) {
+    const trip = await this.repo.findByUid(uid);
+    if (!trip) throw new NotFoundException('كشف السائق غير موجود');
+    if (!trip.partyId) return [];
+    return this.repo.candidateInvoices(trip.partyId, trip.invoiceId ?? null);
+  }
+
+  // ربط/فك ربط الرحلة بفاتورة. رحلة واحدة = فاتورة واحدة، والعمود unique في
+  // الداتابيز، فبنتأكد الأول بدل ما الإدخال يقع بخطأ constraint مش مفهوم.
+  async linkInvoice(uid: string, invoiceUid: string | null) {
+    const trip = await this.repo.findByUid(uid);
+    if (!trip) throw new NotFoundException('كشف السائق غير موجود');
+    if (!invoiceUid) return this.repo.update(uid, { invoiceId: null });
+
+    const invoice = await this.repo.findInvoiceByUid(invoiceUid);
+    if (!invoice) throw new NotFoundException('الفاتورة غير موجودة');
+    if (invoice.kind !== 'SALE') throw new BadRequestException('الربط بيكون بفاتورة بيع بس');
+    if (trip.partyId && invoice.partyId !== trip.partyId) {
+      throw new BadRequestException('الفاتورة مش لنفس عميل الرحلة');
+    }
+    const linked = (invoice as any).driverTrip as { uid: string } | null;
+    if (linked && linked.uid !== uid) {
+      throw new BadRequestException('الفاتورة دي مربوطة برحلة تانية');
+    }
+    return this.repo.update(uid, { invoiceId: invoice.id });
   }
 
   async update(uid: string, dto: UpdateDriverTripDto) {

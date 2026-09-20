@@ -2,10 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 
+// بنود الخدمات (ناولون/تحميل/شفتنة…) على الفاتورة المربوطة — دي اللي بتتحصّل من
+// العميل مقابل النقلة، وبتتقارن بـ agreedFreight اللي بيتدفع للسواق.
+const invoiceServiceItems = {
+  where: { product: { service: true } },
+  select: { qty: true, price: true, product: { select: { name: true } } },
+} as const;
+
 const include = {
   manifest: { select: { uid: true, no: true } },
   party: { select: { uid: true, name: true } },
   payments: { orderBy: { date: 'asc' as const } },
+  invoice: { select: { uid: true, no: true, date: true, items: invoiceServiceItems } },
 };
 
 @Injectable()
@@ -63,6 +71,30 @@ export class DriverTripsRepository {
 
   update(uid: string, data: any) {
     return this.prisma.driverTrip.update({ where: { uid }, data, include });
+  }
+
+  findInvoiceByUid(uid: string) {
+    return this.prisma.invoice.findUnique({ where: { uid }, include: { driverTrip: { select: { uid: true } } } });
+  }
+
+  // فواتير البيع بتاعة نفس العميل اللي فيها بند خدمة (ناولون/تحميل…) ولسه متربطتش
+  // برحلة تانية — دي اللي بتتعرض عليك عشان تختار منها.
+  candidateInvoices(partyId: number, currentInvoiceId: number | null) {
+    return this.prisma.invoice.findMany({
+      where: {
+        partyId,
+        kind: 'SALE',
+        fake: false,
+        items: { some: { product: { service: true } } },
+        OR: [
+          { driverTrip: { is: null } },
+          ...(currentInvoiceId ? [{ id: currentInvoiceId }] : []),
+        ],
+      },
+      select: { uid: true, no: true, date: true, items: invoiceServiceItems },
+      orderBy: { date: 'desc' },
+      take: 50,
+    });
   }
 
   findPaymentByUid(uid: string) {

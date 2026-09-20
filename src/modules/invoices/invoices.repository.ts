@@ -5,7 +5,10 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 
-const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, party: true, warehouse: true } as const;
+// كل endpoint بيرجّع فاتورة بيستخدم الـ include ده — عشان الفاتورة اللي بتوصل
+// للمحرر تبقى كاملة بنفس البيانات اللي اتسجّلت، الخزنة من ضمنها، من أي شاشة
+// اتفتحت منها (القايمة أو صفحة الفاتورة).
+const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, party: true, warehouse: true, treasury: { select: { uid: true, name: true } } } as const;
 
 @Injectable()
 export class InvoicesRepository {
@@ -29,15 +32,12 @@ export class InvoicesRepository {
     return paginate(this.prisma.invoice, q, {
       where,
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      include: { party: true, warehouse: true, items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } } },
+      include: INVOICE_INCLUDE,
     });
   }
 
   findOne(id: string) {
-    return this.prisma.invoice.findUnique({
-      where: { uid: id },
-      include: { party: true, warehouse: true, treasury: true, items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } } },
-    });
+    return this.prisma.invoice.findUnique({ where: { uid: id }, include: INVOICE_INCLUDE });
   }
 
   async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; discount: number; isSale: boolean; createdById?: number }) {

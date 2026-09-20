@@ -3,16 +3,27 @@ import { InvoiceKind } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsRepository } from './products.repository';
+import { BalancesService } from '../balances/balances.service';
 import { deleteConflict, type DeleteMode } from '../../common/delete-mode';
 
 @Injectable()
 export class ProductsService {
-  constructor(private repo: ProductsRepository) {}
+  constructor(private repo: ProductsRepository, private balances: BalancesService) {}
 
   catalog() { return this.repo.catalog(); }
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
   findOne(id: string) { return this.repo.findOne(id); }
   lastPrices(kind: InvoiceKind) { return this.repo.lastPrices(kind); }
+
+  /**
+   * الموجود فعليًا من الصنف دلوقتي في كل المخازن مع بعض. مش (المشترى − المُباع):
+   * ده بيحسب كمان المرتجعات وتسويات المخزن والبضاعة المعارة اللي لسه بره.
+   */
+  async stock(uid: string) {
+    const product = await this.repo.findByUid(uid);
+    if (!product) throw new NotFoundException('Product not found');
+    return { onHand: await this.balances.stockOf(product.id) };
+  }
 
   async movements(uid: string) {
     const result = await this.repo.movements(uid);

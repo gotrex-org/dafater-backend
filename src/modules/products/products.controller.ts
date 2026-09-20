@@ -39,6 +39,12 @@ export class ProductsController {
     return this.service.findAll(q);
   }
 
+  // الموجود دلوقتي من الصنف في كل المخازن — بيتعرض في كارت الصنف جنب الحركات.
+  @Get(':id/stock')
+  stock(@Param('id') id: string) {
+    return this.service.stock(id);
+  }
+
   @Get(':id/movements')
   movements(@Param('id') id: string) {
     return this.service.movements(id);

@@ -34,6 +34,11 @@ export class ReportsController {
     return this.service.summary(from, to);
   }
 
+  @Get('shipping')
+  shipping(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.service.shippingSummary(from, to);
+  }
+
   @Get('inactive-clients')
   inactiveClients(@Query('days') days?: string) {
     return this.service.inactiveClients(days ? Number(days) : 45);

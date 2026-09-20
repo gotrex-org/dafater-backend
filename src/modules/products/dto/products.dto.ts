@@ -7,6 +7,8 @@ export class CreateProductDto {
   @IsOptional() @IsBoolean() pinSale?: boolean;
   @IsOptional() @IsBoolean() pinPurchase?: boolean;
   @IsOptional() @IsNumber() @Min(0) price?: number;
+  @IsOptional() @IsNumber() @Min(0) purchasePrice?: number;
+  @IsOptional() @IsNumber() @Min(0) salePrice?: number;
 }
 
 export class UpdateProductDto {
@@ -16,4 +18,6 @@ export class UpdateProductDto {
   @IsOptional() @IsBoolean() pinSale?: boolean;
   @IsOptional() @IsBoolean() pinPurchase?: boolean;
   @IsOptional() @IsNumber() @Min(0) price?: number;
+  @IsOptional() @IsNumber() @Min(0) purchasePrice?: number;
+  @IsOptional() @IsNumber() @Min(0) salePrice?: number;
 }

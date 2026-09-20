@@ -50,3 +50,8 @@ export class SetArrivalDto {
 export class PatchWeightDiffDto {
   @IsNumber() @Min(0) amount: number;
 }
+
+// ربط الرحلة بفاتورة البيع اللي الناولون اتحصّل فيها — سلسلة فاضية = فك الربط.
+export class LinkInvoiceDto {
+  @IsOptional() @IsString() invoiceId?: string;
+}
