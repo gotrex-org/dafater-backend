@@ -11,7 +11,16 @@ const prisma = new PrismaClient();
 const ALL_VIEWS = [
   'dash', 'invoices', 'deals', 'orders', 'requests', 'manifests',
   'entry', 'inventory', 'ledger', 'treasury', 'settings',
+  'settlement', 'settlement.prices',
 ];
+
+// حساب الدخول لتاب التصفية. الأسماء نفسها (الشركاء) لا تُزرع من هنا — تُضاف
+// وتُحذف من الشاشة، فإعادة تشغيل الـ seed لا تُرجع اسماً محذوفاً.
+const PARTNER_USERNAME = 'mezo';
+const PARTNER_NAME = 'مازن';
+// صلاحيات حساب الشريك: يرى تصفيته وكشف حسابه، ويكتب قوائم أسعار المورد
+// (التصفية برأس المال). الإعدادات واختيار الفواتير للمدير فقط.
+const PARTNER_VIEWS = ['settlement', 'settlement.prices'];
 
 // from original IMPORT_CLIENTS (n=name, o=opening, t=type)
 const IMPORT_CLIENTS: { n: string; o: number; t?: string }[] = [
@@ -54,6 +63,23 @@ async function main() {
   });
 
   const existingUsers = await prisma.user.count();
+
+  // ---- حساب الدخول للتصفية ----
+  // يُنشأ مرة واحدة فقط ولا يُلمس بعدها، فتغيير كلمة المرور لا يُلغى بإعادة
+  // تشغيل الـ seed. الحساب يبقى موجوداً حتى بعد حذف الأسماء من الشاشة.
+  if (!(await prisma.user.findFirst({ where: { username: PARTNER_USERNAME } }))) {
+    await prisma.user.create({
+      data: {
+        name: PARTNER_NAME,
+        username: PARTNER_USERNAME,
+        pinHash: await bcrypt.hash('1234', 10),
+        admin: false,
+        views: PARTNER_VIEWS,
+      },
+    });
+    console.log(`Created settlement user "${PARTNER_USERNAME}".`);
+  }
+
   if (existingUsers > 0) {
     console.log('Users already present — skipping master-data seed.');
     return;
@@ -99,12 +125,16 @@ async function main() {
   });
 
   // ---- expense categories ----
-  await prisma.expenseCategory.createMany({
-    data: [
-      { name: 'إيجار' }, { name: 'مرتبات' }, { name: 'كهرباء ومياه' },
-      { name: 'نقل وشحن' }, { name: 'عمولة' }, { name: 'متنوع' },
-    ],
-  });
+  // migration activity_split بيزرع بنود مصاريف المخزن بنشاطها — هنا بنكمّل الناقص بس.
+  const categories = [
+    { name: 'إيجار المخزن', activity: 'SHIPPING' as const },
+    { name: 'مرتبات', activity: 'SHARED' as const },
+    { name: 'كهرباء ومياه', activity: 'SHIPPING' as const },
+    { name: 'نقل وشحن', activity: 'SHIPPING' as const },
+    { name: 'متنوع', activity: 'TRADE' as const },
+  ];
+  const existingCats = new Set((await prisma.expenseCategory.findMany({ select: { name: true } })).map((c) => c.name));
+  await prisma.expenseCategory.createMany({ data: categories.filter((c) => !existingCats.has(c.name)) });
 
   // ---- clients ----
   for (const c of IMPORT_CLIENTS) {

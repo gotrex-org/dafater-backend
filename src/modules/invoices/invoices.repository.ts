@@ -1,14 +1,17 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvoiceKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
+import { INVOICE_CHARGES_TX_TYPE } from '../../common/activity';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 
 // كل endpoint بيرجّع فاتورة بيستخدم الـ include ده — عشان الفاتورة اللي بتوصل
 // للمحرر تبقى كاملة بنفس البيانات اللي اتسجّلت، الخزنة من ضمنها، من أي شاشة
 // اتفتحت منها (القايمة أو صفحة الفاتورة).
-const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, party: true, warehouse: true, treasury: { select: { uid: true, name: true } } } as const;
+const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, charges: { orderBy: { id: 'asc' }, include: { chargeType: { select: { uid: true, name: true } }, manifest: { select: { uid: true, no: true } } } }, party: true, warehouse: true, treasury: { select: { uid: true, name: true } } } as const;
+
+type Totals = { itemsTotal: number; chargesTotal: number; paid: number; discount: number };
 
 @Injectable()
 export class InvoicesRepository {
@@ -40,8 +43,8 @@ export class InvoicesRepository {
     return this.prisma.invoice.findUnique({ where: { uid: id }, include: INVOICE_INCLUDE });
   }
 
-  async create(dto: CreateInvoiceDto, computed: { total: number; paid: number; discount: number; isSale: boolean; createdById?: number }) {
-    const { total, paid, discount, isSale, createdById } = computed;
+  async create(dto: CreateInvoiceDto, computed: Totals & { isSale: boolean; createdById?: number }) {
+    const { paid, discount, isSale, createdById } = computed;
     const date = new Date(dto.date);
     const autoNo = !dto.no?.trim();
 
@@ -56,6 +59,7 @@ export class InvoicesRepository {
           : Promise.resolve(null),
       ]);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
+      const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
       const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
 
       // Exchange rate only meaningful on a USD (dollar) party's invoice.
@@ -77,11 +81,12 @@ export class InvoicesRepository {
           commissionAmount: null,
           commissionTo: null,
           items: { create: itemsCreate },
+          charges: { create: chargesCreate },
         },
       });
 
       // Fake invoice = document only: no ledger/treasury movements at all.
-      const txns = dto.fake ? [] : this.buildTxns(invoice.id, { party, treasury, date, no, total, paid, discount, isSale, items: resolvedItems, createdById, exchangeRate: rate ?? 0 });
+      const txns = dto.fake ? [] : this.buildTxns(invoice.id, { ...computed, party, treasury, date, no, chargeNames, items: resolvedItems, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       return tx.invoice.findUnique({ where: { id: invoice.id }, include: INVOICE_INCLUDE });
@@ -97,8 +102,8 @@ export class InvoicesRepository {
     }
   }
 
-  async update(id: string, dto: UpdateInvoiceDto, computed: { total: number; paid: number; discount: number; createdById?: number }) {
-    const { total, paid, discount, createdById } = computed;
+  async update(id: string, dto: UpdateInvoiceDto, computed: Totals & { createdById?: number }) {
+    const { paid, discount } = computed;
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
@@ -118,6 +123,7 @@ export class InvoicesRepository {
           : Promise.resolve(null),
       ]);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
+      const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
 
       const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
       await tx.invoice.update({
@@ -135,10 +141,11 @@ export class InvoicesRepository {
           note: dto.note ?? null,
           // متتصفّرش العمولة — بتفضل زي ما هي (بتتظبط من updateCommission بس).
           items: { deleteMany: {}, create: itemsCreate },
+          charges: { deleteMany: {}, create: chargesCreate },
         },
       });
 
-      const txns = dto.fake ? [] : this.buildTxns(invId, { party, treasury, date, no, total, paid, discount, isSale, items: resolvedItems, createdById, exchangeRate: rate ?? 0 });
+      const txns = dto.fake ? [] : this.buildTxns(invId, { ...computed, party, treasury, date, no, isSale, chargeNames, items: resolvedItems, exchangeRate: rate ?? 0 });
       if (txns.length) await tx.transaction.createMany({ data: txns });
 
       // إعادة ترحيل عمولة الفاتورة المحفوظة (لو موجودة) — لأن deleteMany مسحت صفها فوق.
@@ -288,6 +295,7 @@ export class InvoicesRepository {
       select: {
         partyId: true, date: true, discount: true, fake: true, currency: true,
         items: { select: { qty: true, price: true, product: { select: { name: true } } } },
+        charges: { orderBy: { id: 'asc' }, select: { qty: true, price: true, chargeType: { select: { name: true } } } },
       },
     });
     // الفاتورة الوهمية مالهاش حركات — العميل مايشوفهاش أصلاً في كشفه.
@@ -297,11 +305,15 @@ export class InvoicesRepository {
     if (!s) return null;
 
     const discount = inv.discount || 0;
-    const itemsTotal = inv.items.reduce((sum, it) => sum + it.qty * it.price, 0) - discount;
+    const chargesTotal = inv.charges.reduce((sum, c) => sum + c.qty * c.price, 0);
+    // صافي الفاتورة = الأصناف + بنود الشحن − الخصم
+    const itemsTotal = inv.items.reduce((sum, it) => sum + it.qty * it.price, 0) + chargesTotal - discount;
     return {
       date: inv.date,
       currency: inv.currency,
       items: inv.items.map((it) => ({ name: it.product.name, qty: it.qty, price: it.price })),
+      charges: inv.charges.map((c) => ({ name: c.chargeType.name, qty: c.qty, price: c.price })),
+      chargesTotal,
       itemsTotal,
       discount,
       previousBalance: s.previousBalance,
@@ -435,11 +447,43 @@ export class InvoicesRepository {
     return { create, resolved };
   }
 
+  // بنود الشحن: uid البند والعربية → ids. الأسماء بترجع عشان بيان رجل الشحن في كشف الحساب.
+  private async buildCharges(tx: Prisma.TransactionClient, charges: CreateInvoiceDto['charges']) {
+    const list = (charges ?? []).filter((c) => c.chargeTypeId && (c.qty ?? 1) * c.price !== 0);
+    if (!list.length) return { create: [] as Prisma.InvoiceChargeCreateWithoutInvoiceInput[], names: [] as string[] };
+    const typeUids = [...new Set(list.map((c) => c.chargeTypeId))];
+    const manUids = [...new Set(list.map((c) => c.manifestId).filter(Boolean) as string[])];
+    const [types, manifests] = await Promise.all([
+      tx.chargeType.findMany({ where: { uid: { in: typeUids } }, select: { id: true, uid: true, name: true } }),
+      manUids.length
+        ? tx.manifest.findMany({ where: { uid: { in: manUids } }, select: { id: true, uid: true } })
+        : Promise.resolve([] as { id: number; uid: string }[]),
+    ]);
+    const tByUid = new Map(types.map((t) => [t.uid, t]));
+    const mByUid = new Map(manifests.map((m) => [m.uid, m.id]));
+    const create: Prisma.InvoiceChargeCreateWithoutInvoiceInput[] = [];
+    const names: string[] = [];
+    for (const c of list) {
+      const t = tByUid.get(c.chargeTypeId);
+      if (!t) throw new NotFoundException('بند الشحن غير موجود');
+      const manifestId = c.manifestId ? mByUid.get(c.manifestId) : undefined;
+      create.push({
+        chargeType: { connect: { id: t.id } },
+        qty: c.qty ?? 1,
+        price: c.price,
+        note: c.note?.trim() || null,
+        ...(manifestId ? { manifest: { connect: { id: manifestId } } } : {}),
+      });
+      if (!names.includes(t.name)) names.push(t.name);
+    }
+    return { create, names };
+  }
+
   private buildTxns(
     invoiceId: number,
-    p: {
+    p: Totals & {
       party: { id: number }; treasury: { id: number } | null;
-      date: Date; no: string; total: number; paid: number; discount: number; isSale: boolean;
+      date: Date; no: string; isSale: boolean; chargeNames: string[];
       items: {
         freight: number; tea: number; commission: number; commissionPartyId: number | null;
         freightTreasuryId: number | null; freightNote: string | null; teaTreasuryId: number | null; teaNote: string | null;
@@ -447,19 +491,30 @@ export class InvoicesRepository {
       createdById?: number; exchangeRate?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { party, treasury, date, no, total, paid, discount, isSale, items, createdById, exchangeRate } = p;
-    // The party owes/us the invoice total minus any discount.
-    const net = total - (discount || 0);
-    const discNote = discount > 0 ? ` (بعد خصم ${discount})` : '';
+    const { party, treasury, date, no, itemsTotal, chargesTotal, paid, discount, isSale, chargeNames, items, createdById, exchangeRate } = p;
+    // الطرف عليه/له إجمالي الفاتورة ناقص الخصم، على رجلين بنشاطين: الأصناف (تجارة)
+    // وبنود الشحن (شحن). الخصم بيتخصم من الأصناف الأول، والباقي منه من البنود.
+    const disc = discount || 0;
+    const tradeDisc = Math.min(disc, itemsTotal);
+    const tradeNet = itemsTotal - tradeDisc;
+    const shipNet = chargesTotal - (disc - tradeDisc);
+    const discNote = disc > 0 ? ` (بعد خصم ${disc})` : '';
     const txns: Prisma.TransactionCreateManyInput[] = [];
     // نختم سعر صرف الفاتورة على معاملة الطرف الرئيسية (فاتورة بيع/شراء) عشان متوسط سعر
     // صرف الطرف الدولاري يتحسب صح في الميزان وكشف الحساب. صفر لو الطرف بالمصري.
     const usd = exchangeRate && exchangeRate > 0 ? { exchangeRate } : {};
+    // رجل الأصناف بتتكتب دايماً إلا لو الفاتورة بنود شحن بس — عشان أي فاتورة
+    // قديمة من غير بنود تفضل حركتها زي ما هي بالظبط.
+    const writeTrade = tradeNet !== 0 || chargesTotal === 0;
+    const writeShip = chargesTotal !== 0;
+    const shipNote = `بنود شحن فاتورة ${isSale ? 'بيع' : 'شراء'} #${no}${chargeNames.length ? ` (${chargeNames.join('، ')})` : ''}`;
     if (isSale) {
-      txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: net, note: `فاتورة بيع #${no}${discNote}`, invoiceId, ...usd });
+      if (writeTrade) txns.push({ date, type: 'فاتورة بيع', partyId: party.id, debit: tradeNet, note: `فاتورة بيع #${no}${discNote}`, invoiceId, activity: 'TRADE', ...usd });
+      if (writeShip) txns.push({ date, type: INVOICE_CHARGES_TX_TYPE, partyId: party.id, debit: shipNet, note: shipNote, invoiceId, activity: 'SHIPPING', ...usd });
       if (paid > 0) txns.push({ date, type: 'تحصيل', partyId: party.id, treasuryId: treasury?.id ?? null, credit: paid, cashIn: paid, note: `محصّل مع فاتورة #${no}`, invoiceId });
     } else {
-      txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: net, note: `فاتورة شراء #${no}${discNote}`, invoiceId, ...usd });
+      if (writeTrade) txns.push({ date, type: 'فاتورة شراء', partyId: party.id, credit: tradeNet, note: `فاتورة شراء #${no}${discNote}`, invoiceId, activity: 'TRADE', ...usd });
+      if (writeShip) txns.push({ date, type: INVOICE_CHARGES_TX_TYPE, partyId: party.id, credit: shipNet, note: shipNote, invoiceId, activity: 'SHIPPING', ...usd });
       if (paid > 0) txns.push({ date, type: 'دفعة لمورد', partyId: party.id, treasuryId: treasury?.id ?? null, debit: paid, cashOut: paid, note: `مدفوع مع فاتورة #${no}`, invoiceId });
     }
     // ناولون/شاي كل واحد بيتدفع نقدًا من خزينته المختارة (fallback خزينة الفاتورة) وببيانه الخاص،

@@ -9,10 +9,115 @@ const SKIP = new Set(['auth', 'audit']);
 // UID pattern (cuid / cuid2)
 const UID_RE = /^c[a-z0-9]{20,}$/;
 
+// مسارات التصفية متداخلة (settlement/:partnerUid/<قسم>/:uid)، فـ uid المسار
+// الذي يقرأه الـ interceptor هو uid الاسم لا uid الكيان المعدَّل. الكيان يُحدَّد
+// من مقطع المسار، وإلا سُجّلت حركة رأس مال أو مبلغ للوحدة بلا بيانات.
+function settlementSegments(parts: string[]) {
+  const segs = parts[0] === 'api' ? parts.slice(1) : parts;
+  return { section: segs[2] ?? null, tail: segs[3] ?? null, partnerUid: segs[1] ?? null };
+}
+
+async function settlementSnapshot(p: PrismaService, uid: string, parts: string[]) {
+  const { section, tail, partnerUid } = settlementSegments(parts);
+
+  // settlement/partners/:uid — حذف الاسم يمسح معه فواتيره المختارة وحركات
+  // رأس ماله بالـ cascade، فاللقطة تشملها
+  if (partnerUid === 'partners') {
+    const row = await p.partner.findUnique({
+      where: { uid: section ?? uid },
+      include: {
+        suppliers: { include: { supplier: { select: { name: true } } } },
+        capitalMovements: true,
+        vehicles: { include: { invoice: { select: { no: true, kind: true, date: true } } } },
+        user: { select: { name: true, username: true } },
+      },
+    });
+    if (!row) return null;
+    // الحقول القابلة للمقارنة بنفس أسماء الريسبونس (فالـ diff يطلع نظيفاً)،
+    // والباقي بأسماء مختلفة: يُقرأ في اللقطة ولا يظهر كتغيير وهمي كل مرة
+    return {
+      name: row.name,
+      shareBasis: row.shareBasis,
+      capital: row.capital,
+      cartonExpense: row.cartonExpense,
+      active: row.active,
+      note: row.note,
+      supplierNames: row.suppliers.map((s) => s.supplier.name),
+      loginUser: row.user ? (row.user.username ?? row.user.name) : null,
+      movements: row.capitalMovements.map((m) => ({ date: m.date, amount: m.amount, note: m.note })),
+      selectedInvoices: row.vehicles.map((v) => ({
+        invoiceNo: v.invoice.no, kind: v.invoice.kind, rate: v.rate, cartons: v.cartons,
+      })),
+    };
+  }
+
+  // settlement/:partner/vehicles[/:invoiceUid] — اختيار الفواتير أو إزالتها
+  if (section === 'vehicles' || section === 'vehicles-all') {
+    const row = await p.partner.findUnique({
+      where: { uid: partnerUid ?? uid },
+      include: { vehicles: { include: { invoice: { select: { no: true, kind: true, date: true } } } } },
+    });
+    if (!row) return null;
+    return {
+      name: row.name,
+      selectedInvoices: row.vehicles.map((v) => ({
+        invoiceNo: v.invoice.no, kind: v.invoice.kind, rate: v.rate,
+      })),
+    };
+  }
+
+  if (section === 'capital') {
+    // حركة واحدة بالحذف، وحالة رأس المال كلها بالإضافة (لا uid في الرد)
+    if (tail) {
+      return p.partnerCapitalMovement.findUnique({
+        where: { uid: tail },
+        include: { partner: { select: { name: true } }, createdBy: { select: { name: true } } },
+      });
+    }
+    return p.partner.findUnique({
+      where: { uid: partnerUid ?? uid },
+      select: { name: true, capital: true, capitalMovements: true },
+    });
+  }
+
+  if (section === 'payments') {
+    if (tail) {
+      const row = await p.partnerPayment.findUnique({
+        where: { uid: tail },
+        include: { partner: { select: { name: true } }, createdBy: { select: { name: true } } },
+      });
+      return row ? { ...row, isPayment: true } : null;
+    }
+    return p.partner.findUnique({
+      where: { uid: partnerUid ?? uid },
+      select: { name: true, payments: true },
+    });
+  }
+
+  if (section === 'fixed' && tail) {
+    const [partner, invoice] = await Promise.all([
+      p.partner.findUnique({ where: { uid: partnerUid ?? uid }, select: { id: true, name: true } }),
+      p.invoice.findUnique({ where: { uid: tail }, select: { id: true, no: true, kind: true, date: true } }),
+    ]);
+    if (!partner || !invoice) return null;
+    const row = await p.partnerVehicle.findUnique({
+      where: { partnerId_invoiceId: { partnerId: partner.id, invoiceId: invoice.id } },
+      select: { rate: true, note: true },
+    });
+    return { partnerName: partner.name, invoiceNo: invoice.no, rate: row?.rate ?? null, note: row?.note ?? null };
+  }
+
+  // settlement/:partner/price-lists/:uid — uid القائمة يأتي من الريسبونس
+  return p.supplierPriceList.findUnique({
+    where: { uid },
+    include: { items: { include: { product: { select: { name: true } } } }, supplier: { select: { name: true } } },
+  });
+}
+
 // Fields to snapshot BEFORE an update, keyed by entity string from URL
 const BEFORE_FETCH: Record<
   string,
-  (p: PrismaService, uid: string) => Promise<Record<string, any> | null>
+  (p: PrismaService, uid: string, parts: string[]) => Promise<Record<string, any> | null>
 > = {
   invoices: (p, uid) => p.invoice.findUnique({
     where: { uid },
@@ -45,6 +150,8 @@ const BEFORE_FETCH: Record<
   users:         (p, uid) => p.user.findUnique({ where: { uid }, select: { name: true, admin: true, views: true, role: true } }),
   loans:         (p, uid) => p.loan.findUnique({ where: { uid }, select: { status: true, returnedQty: true, cashReturnedQty: true, note: true } }),
   orders:        (p, uid) => p.order.findUnique({ where: { uid }, select: { name: true, phone: true, note: true, status: true } }),
+  // تعديل المبلغ للوحدة أو قائمة الأسعار أو إعدادات الاسم — كلها تحت settlement
+  settlement:    (p, uid, parts) => settlementSnapshot(p, uid, parts),
 };
 
 // Full entity snapshot (with relation names) — captured BEFORE a DELETE (for
@@ -52,7 +159,7 @@ const BEFORE_FETCH: Record<
 // of the new record: quantity, product, date, party, … not just a short summary).
 const DELETE_FETCH: Record<
   string,
-  (p: PrismaService, uid: string) => Promise<any>
+  (p: PrismaService, uid: string, parts: string[]) => Promise<any>
 > = {
   // Deleting one transaction can cascade to its whole group (see
   // transaction-cascade.ts) — snapshot every sibling sharing the groupId, not
@@ -76,6 +183,10 @@ const DELETE_FETCH: Record<
   loans:                (p, uid) => p.loan.findUnique({ where: { uid }, include: { returns: true, product: { select: { name: true } }, warehouse: { select: { name: true } }, party: { select: { name: true } } } }),
   orders:               (p, uid) => p.order.findUnique({ where: { uid }, include: { items: true } }),
   requests:             (p, uid) => p.request.findUnique({ where: { uid }, include: { items: true } }),
+  // التصفية: الاسم وإعداداته، حركات رأس المال، المبلغ للوحدة، وقوائم أسعار
+  // المورد — كلها تحت نفس المسار، والقسم يُحدَّد من مقطع المسار. المسار متداخل
+  // (settlement/:partner/<قسم>/:id) فـ uid المسار يطلع uid الاسم.
+  settlement:           (p, uid, parts) => settlementSnapshot(p, uid, parts),
   'dollar-agents':      (p, uid) => p.dollarAgent.findUnique({ where: { uid }, include: { txs: true } }),
   treasury: (p, uid) => p.treasuryAccount.findUnique({
     where: { uid },
@@ -245,6 +356,36 @@ function buildSummary(entity: string, snap: any): string | null {
       return `وكيل دولار: ${n(s.name)}`;
     case 'driver-trips':
       return `رحلة سائق: ${n(s.driverName)}${s.agreedFreight ? ' — ناولون ' + n(s.agreedFreight) : ''}`;
+    case 'settlement': {
+      // اللقطة تختلف بحسب القسم: اسم، حركة رأس مال، مبلغ للوحدة، أو قائمة أسعار
+      if (s.shareBasis) {
+        const how = s.shareBasis === 'FIXED' ? 'تصفية ثابتة' : `رأس مال ${fmtAmount(s.capital)}`;
+        return `تصفية: ${n(s.name)} — ${how}`;
+      }
+      // الدفعة والحركة كلتاهما {amount, partner} — الدفعة دائماً موجبة وبلا
+      // إشارة، فنميّزها بوجود الحركة في اللقطة لا بالمبلغ
+      if (s.amount !== undefined && s.partner?.name) {
+        return s.isPayment
+          ? `دفعة لـ ${n(s.partner.name)}: ${fmtAmount(s.amount)}`
+          : `رأس مال ${n(s.partner.name)}: ${s.amount > 0 ? 'إضافة' : 'نقص'} ${fmtAmount(Math.abs(s.amount))}`;
+      }
+      if (Array.isArray(s.payments)) {
+        return `دفعات ${n(s.name)}: ${s.payments.length} دفعة بإجمالي ${fmtAmount(s.payments.reduce((t: number, x: any) => t + (Number(x.amount) || 0), 0))}`;
+      }
+      if (s.invoiceNo !== undefined) {
+        return `تصفية ${n(s.partnerName)}: فاتورة شراء #${n(s.invoiceNo)} — المبلغ للوحدة ${fmtAmount(s.rate)}`;
+      }
+      if (Array.isArray(s.capitalMovements)) {
+        return `رأس مال ${n(s.name)}: ${s.capitalMovements.length} حركة`;
+      }
+      if (Array.isArray(s.selectedInvoices)) {
+        return `تصفية ${n(s.name)}: ${s.selectedInvoices.length} فاتورة محددة`;
+      }
+      if (s.supplier?.name) {
+        return `قائمة أسعار ${n(s.supplier.name)}${items ? ` — ${items} صنف` : ''}`;
+      }
+      return null;
+    }
     default:
       return null;
   }
@@ -284,21 +425,25 @@ export class AuditInterceptor implements NestInterceptor {
 
     // Extract the entity uid from the URL path (works for PATCH / DELETE / resolve sub-routes)
     const uidIdx = parts[0] === 'api' ? 2 : 1;
-    const pathUid = parts[uidIdx] && UID_RE.test(parts[uidIdx]) ? parts[uidIdx] : null;
+    // الموضع المعتاد، وإلا آخر مقطع يشبه uid — مسارات مثل
+    // settlement/partners/:uid كان uid فيها يسقط فلا تُؤخذ لقطة قبل الحذف
+    const pathUid = parts[uidIdx] && UID_RE.test(parts[uidIdx])
+      ? parts[uidIdx]
+      : ([...parts].reverse().find((s) => UID_RE.test(s)) ?? null);
 
     // For UPDATE, snapshot the entity before the handler mutates it
     let before: Record<string, any> | null = null;
     if (action === 'UPDATE') {
       const uid = pathUid;
       if (uid && BEFORE_FETCH[entity]) {
-        before = await BEFORE_FETCH[entity](this.prisma, uid).catch(() => null);
+        before = await BEFORE_FETCH[entity](this.prisma, uid, parts).catch(() => null);
       }
     }
 
     // For DELETE, capture the full entity snapshot before it's gone
     let snapshot: any = null;
     if (action === 'DELETE' && pathUid && DELETE_FETCH[entity]) {
-      snapshot = await DELETE_FETCH[entity](this.prisma, pathUid).catch(() => null);
+      snapshot = await DELETE_FETCH[entity](this.prisma, pathUid, parts).catch(() => null);
     }
 
     return next.handle().pipe(
@@ -321,7 +466,7 @@ export class AuditInterceptor implements NestInterceptor {
           // complete post-change record).
           let fullSnapshot = snapshot;
           if ((action === 'CREATE' || action === 'UPDATE') && entityUid && DELETE_FETCH[entity]) {
-            fullSnapshot = await DELETE_FETCH[entity](this.prisma, entityUid).catch(() => null);
+            fullSnapshot = await DELETE_FETCH[entity](this.prisma, entityUid, parts).catch(() => null);
           }
 
           const summary = isDeleteTxn

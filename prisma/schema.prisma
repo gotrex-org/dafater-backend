@@ -53,6 +53,15 @@ enum Currency {
   USD
 }
 
+// النشاط — كل حركة مالية تابعة لنشاط التجارة (أصناف/مخزون/مشتريات) أو نشاط الشحن
+// (بنود الشحن/تكاليف العربيات/مصاريف المخزن/التخليص). SHARED = مقسّم بين الاتنين
+// بنسبة (المرتبات) — النسبة متثبّتة على الحركة في `shippingPct` وقت تسجيلها.
+enum Activity {
+  TRADE
+  SHIPPING
+  SHARED
+}
+
 enum InvoiceKind {
   SALE // بيع
   PURCHASE // شراء
@@ -123,6 +132,10 @@ model User {
   createdTransactions Transaction[]
   reminders           Reminder[]
   ownerEntries        OwnerEntry[]
+  // تصفية الشريك المربوطة بالحساب ده — شوف Partner.userId
+  partner             Partner?
+  capitalMovementsAdded PartnerCapitalMovement[] @relation("CapitalMovementCreatedBy")
+  partnerPaymentsAdded  PartnerPayment[]         @relation("PartnerPaymentCreatedBy")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -181,6 +194,7 @@ model Party {
   currency Currency   @default(EGP) // العملة اللي بيتعامل بيها الطرف
   opening  Float      @default(0) // opening balance (+ = owes us)
   hidden   Boolean    @default(false)
+  note     String? // ملاحظات (مكاتب التخليص)
 
   // Marks the single system placeholder party used for "بيع مباشر" (direct sale,
   // no customer picked) — see PartiesService.getOrCreateDirectSaleParty().
@@ -207,6 +221,8 @@ model Party {
   driverTrips      DriverTrip[]
   loans            Loan[]
   clearedManifests Manifest[] @relation("ManifestClearingAgent")
+  partnerSuppliers PartnerSupplier[]    @relation("PartnerSupplier")
+  supplierPriceLists SupplierPriceList[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -282,6 +298,8 @@ model Product {
   pinPurchase Boolean @default(false)
 
   invoiceItems InvoiceItem[]
+  priceListItems SupplierPriceListItem[]
+  itemWeeks      InvoiceItemWeek[]
   returnItems  ReturnItem[]
   dealItems    DealItem[]
   adjustments  Adjustment[]
@@ -304,6 +322,12 @@ model ExpenseCategory {
   group ExpenseGroup @default(WAREHOUSE)
   // true = مصروف يُضاف على تكلفة البضاعة (زي الناولون والشاي)؛ false = مصروف تشغيلي (مرتبات/إيجار)
   addsToGoods Boolean @default(false)
+  // النشاط اللي المصروف بيتحسب عليه. SHARED = مقسّم بنسبة Config.salaryShippingPct.
+  activity Activity @default(TRADE)
+  // البند بيتربط بعربية (تحميل/شفتنة) — الصرف بيعرض خانة اختيارية للعربية.
+  vehicleLink Boolean @default(false)
+  // مؤرشف: البند المستخدم في حركات بيتأرشف بدل الحذف — الحركات القديمة بتفضل باسم بندها.
+  hidden      Boolean @default(false)
 
   transactions Transaction[]
   expenseSchedules WarehouseExpenseSchedule[]
@@ -383,6 +407,11 @@ model Transaction {
   // 0 when not applicable. Lets the trial balance weight each party's average rate.
   exchangeRate Float @default(0)
 
+  // نشاط الحركة (تجارة/شحن/مشترك). بيتحدّد تلقائي عند الإنشاء — شوف common/activity.ts.
+  activity    Activity @default(TRADE)
+  // نصيب الشحن % للحركة المشتركة (SHARED) — متثبّت وقت التسجيل.
+  shippingPct Float?
+
   // "تحصيل مجهول": cash received whose owner is unknown; sits pending until
   // resolved to a party, then credited to their ledger.
   pending Boolean @default(false)
@@ -430,6 +459,7 @@ model Transaction {
   @@index([date])
   @@index([groupId])
   @@index([manifestId])
+  @@index([activity])
 }
 
 // ----------------------------- invoices -----------------------------
@@ -469,6 +499,12 @@ model Invoice {
   commissionTo     String?
 
   items        InvoiceItem[]
+  // بنود الشحن (نولون/تحميل/شفتنة…) — جدول منفصل عن الأصناف، لا يؤثر على المخزون.
+  charges      InvoiceCharge[]
+  // تعليم الفاتورة كعربية داخلة في شراكة مازن
+  // العربيات الداخلة في تصفية شريك أو أكتر — شوف PartnerVehicle
+  partnerVehicles PartnerVehicle[]
+  itemWeeks       InvoiceItemWeek[]
   transactions Transaction[]
   manifests    Manifest[]
   returns      Return[]
@@ -518,6 +554,39 @@ model InvoiceItem {
   // الـ schema تطابق الواقع (زي @@index([hidden]) في Invoice).
   @@index([freightTreasuryId])
   @@index([teaTreasuryId])
+}
+
+// بند شحن — قائمة قابلة للتعديل من الإعدادات (نولون/تحميل/شفتنة…).
+model ChargeType {
+  id        Int             @id @default(autoincrement())
+  uid       String          @unique @default(cuid())
+  name      String          @unique
+  sortOrder Int             @default(0)
+  // أرشفة بدل الحذف لو البند مستخدم — الفواتير القديمة بتشاور عليه.
+  hidden    Boolean         @default(false)
+  charges   InvoiceCharge[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+}
+
+// سطر بند شحن على فاتورة — الإجمالي = الكمية × السعر. نشاطه شحن دايماً.
+model InvoiceCharge {
+  id           Int        @id @default(autoincrement())
+  uid          String     @unique @default(cuid())
+  invoice      Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId    Int
+  chargeType   ChargeType @relation(fields: [chargeTypeId], references: [id], onDelete: Restrict)
+  chargeTypeId Int
+  qty          Float      @default(1)
+  price        Float
+  note         String?
+  // العربية اللي البند ده إيرادها — اختياري. لو الفاتورة عليها عربية واحدة بس،
+  // البنود غير المربوطة بتتحسب عليها تلقائي في كشف العربية.
+  manifest     Manifest?  @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId   Int?
+
+  @@index([invoiceId])
+  @@index([manifestId])
 }
 
 // ------------------------------ returns ------------------------------
@@ -773,6 +842,7 @@ model Manifest {
   items        ManifestItem[]
   driverTrips  DriverTrip[]
   transactions Transaction[]
+  charges      InvoiceCharge[]
 
   @@index([clearingAgentId])
 
@@ -920,6 +990,8 @@ model Config {
   orderEmail     String @default("yusuftarek.97@gmail.com")
   delayGraceDays Int    @default(8)    // أيام الحرية قبل بداية العطلة
   delayFeePerDay Float  @default(1200) // قيمة يوم العطلة بالجنيه
+  // نصيب نشاط الشحن % من المصاريف المشتركة (المرتبات) — والباقي تجارة.
+  salaryShippingPct Float @default(50)
 }
 
 // ------------------------------ audit log ------------------------------
@@ -1028,4 +1100,185 @@ model DollarAgentTx {
   createdAt DateTime @default(now())
 
   @@index([agentId])
+}
+
+
+// ------------------------- تصفية الشركاء -------------------------
+
+// طريقة التصفية — تُختار لكل شريك من الإعدادات.
+enum ShareBasis {
+  // برأس المال: نسبته = رأس ماله ÷ رأس مال الأصناف × 100 (بحد أقصى 100%)،
+  // ونصيبه = صافي ربح الفواتير المختارة × نسبته.
+  CAPITAL
+  // تصفية ثابتة: مبلغ بالجنيه لكل وحدة. لكل فاتورة شراء مختارة،
+  // المستحق = الكمية × المبلغ المكتوب لها (ليس نسبة مئوية).
+  FIXED
+}
+
+// الشريك: اسم وطريقة تصفية. التصفية تمشي على الفواتير المختارة له، وكشف
+// الحساب يجمع مستحقه منها.
+//
+// برأس المال: تُختار فواتير بيع كاملة، والحساب على أصناف المورد المحدد بسعر
+// شرائها من قوائم أسعاره وسعر بيعها من الفاتورة، ناقص مصروف التشغيل.
+// تصفية ثابتة: تُختار فواتير شراء، ويُكتب لكل فاتورة المبلغ للوحدة.
+//
+// الشريك المرتبط بحساب (userId) يرى تصفيته هو فقط.
+
+model Partner {
+  id            Int        @id @default(autoincrement())
+  uid           String     @unique @default(cuid())
+  name          String     @unique
+
+  shareBasis    ShareBasis @default(CAPITAL)
+  // رأس المال الافتتاحي. رأس المال الحالي = هذا + مجموع حركات الإضافة والنقص
+  // (شوف PartnerCapitalMovement)، فالتعديلات لها سجل بتاريخها.
+  capital       Float      @default(0)
+  // مصروف تشغيل لكل كرتونة يُخصم من ربح الفاتورة. 0 = بدون خصم. (برأس المال فقط)
+  cartonExpense Float      @default(0)
+
+  // حساب الدخول. عند ربطه يرى صاحبه هذه التصفية فقط دون غيرها.
+  user          User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId        Int?       @unique
+  active        Boolean    @default(true)
+  note          String?
+
+  suppliers        PartnerSupplier[]
+  vehicles         PartnerVehicle[]
+  capitalMovements PartnerCapitalMovement[]
+  payments         PartnerPayment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// إضافة أو نقص رأس مال على القديم. مجموعها + الافتتاحي = رأس المال الحالي،
+// والسجل يبيّن متى تغيّر وبكم.
+model PartnerCapitalMovement {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId Int
+  date      DateTime
+  // موجب = إضافة، سالب = نقص
+  amount    Float
+  note      String?
+
+  createdBy   User? @relation("CapitalMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([partnerId, date])
+}
+
+// دفعة اتسلّمها الاسم من مستحقه في التصفية. بتنزل في كشف حسابه فبيبان
+// المتبقي عليه. دي حركة في كشف التصفية بس — مش حركة خزنة ولا سطر Transaction.
+model PartnerPayment {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId Int
+  date      DateTime
+  amount    Float
+  note      String?
+
+  createdBy   User? @relation("PartnerPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([partnerId, date])
+}
+
+// الموردين اللي أصنافهم بتتحسب للاسم ده. مفيش أي صف = كل أصناف الفاتورة.
+model PartnerSupplier {
+  partner    Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId  Int
+  supplier   Party   @relation("PartnerSupplier", fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierId Int
+
+  @@id([partnerId, supplierId])
+  @@index([supplierId])
+}
+
+// قايمة أسعار المورد لفترة (من تاريخ لتاريخ). القوايم القديمة بتفضل محفوظة للأبد
+// — الحسابات القديمة بتقرا منها، فمفيش حذف من الـ API خالص. الفترات مابتتعارضش
+// لنفس المورد (الخدمة بتتحقق)، فكل تاريخ فاتورة بيوقع في قايمة واحدة بالكتير.
+// التاريخين دايمًا منتصف ليل UTC، والنهاية داخلة في الفترة (inclusive).
+model SupplierPriceList {
+  id         Int      @id @default(autoincrement())
+  uid        String   @unique @default(cuid())
+  supplier   Party    @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierId Int
+  weekStart  DateTime
+  weekEnd    DateTime
+  note       String?
+
+  items     SupplierPriceListItem[]
+  itemWeeks InvoiceItemWeek[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // أسبوع واحد لكل مورد = قايمة واحدة
+  @@unique([supplierId, weekStart])
+}
+
+model SupplierPriceListItem {
+  id          Int               @id @default(autoincrement())
+  uid         String            @unique @default(cuid())
+  priceList   SupplierPriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  priceListId Int
+  product     Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId   Int
+  // سعر شراء الكرتونة من المورد في الأسبوع ده، بالجنيه
+  price       Float             @default(0)
+
+  @@unique([priceListId, productId])
+  @@index([productId])
+}
+
+// فاتورة مختارة للتصفية. المدير هو من يختار.
+//   برأس المال   → فاتورة بيع كاملة، والنصيب نسبة من صافي ربحها
+//   تصفية ثابتة  → فاتورة شراء، والمستحق = الكمية × `rate`
+model PartnerVehicle {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  partner   Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int
+  // تصفية ثابتة: المبلغ بالجنيه لكل وحدة في هذه الفاتورة. يُكتب مع الاختيار
+  // فيبقى ثابتاً عليها، فتغييره لاحقاً لا يُعيد تسعير فواتير سابقة.
+  rate      Float?
+  // برأس المال: تعديل يدوي لعدد الكراتين — بدونه العدد = مجموع كميات الأصناف
+  cartons   Float?
+  note      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([partnerId, invoiceId])
+  @@index([invoiceId])
+}
+
+// أسبوع مفروض على صنف في فاتورة — لما دفع العربية يتقسم على أسبوعين.
+//
+// المفتاح (الفاتورة، الصنف) مش سطر الفاتورة بالقصد: تعديل أي فاتورة بيمسح أسطرها
+// ويعمل أسطر جديدة (invoices.repository: items deleteMany + create)، فلو الربط
+// كان على invoiceItemId كان الأسبوع المفروض بيضيع بالصمت مع أي تعديل.
+model InvoiceItemWeek {
+  id          Int               @id @default(autoincrement())
+  uid         String            @unique @default(cuid())
+  invoice     Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId   Int
+  product     Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   Int
+  priceList   SupplierPriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  priceListId Int
+
+  createdAt DateTime @default(now())
+
+  @@unique([invoiceId, productId])
+  @@index([priceListId])
 }

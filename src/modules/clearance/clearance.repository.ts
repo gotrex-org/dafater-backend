@@ -1,9 +1,31 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /** بيان الحركة في كشف الحساب — بيه بنميّز حركات التخليص عن أي حركة تانية. */
 export const CLEARANCE_EXPENSE_TYPE = 'جمارك';
 export const CLEARANCE_PAY_TYPE = 'سداد مخلّص';
+
+const MOVEMENT_INCLUDE = {
+  party: { select: { uid: true, name: true } },
+  manifest: {
+    select: {
+      uid: true, no: true, date: true, clientName: true,
+      vehicleLabel: true, vehicleNo: true, trailerNo: true,
+    },
+  },
+  category: { select: { uid: true, name: true } },
+  treasury: { select: { uid: true, name: true, currency: true } },
+} as const;
+
+export type MovementData = {
+  date: Date; type: string; partyId: number;
+  debit?: number; credit?: number;
+  cashOut?: number; treasuryId?: number;
+  manifestId?: number; categoryId?: number;
+  exchangeRate?: number; groupId?: string;
+  note?: string; createdById?: number;
+};
 
 @Injectable()
 export class ClearanceRepository {
@@ -25,53 +47,121 @@ export class ClearanceRepository {
     return this.prisma.expenseCategory.findUnique({ where: { uid } });
   }
 
-  /** كل المخلّصين — الطرف بدور CLEARANCE. */
-  listAgents() {
+  /** مكاتب التخليص — الطرف بدور CLEARANCE. المؤرشفة بس لما تتطلب. */
+  listAgents(includeArchived = false) {
     return this.prisma.party.findMany({
-      where: { role: 'CLEARANCE', hidden: false },
-      select: { id: true, uid: true, name: true, phone: true, opening: true },
-      orderBy: { name: 'asc' },
+      where: { role: 'CLEARANCE', ...(includeArchived ? {} : { hidden: false }) },
+      select: { id: true, uid: true, name: true, phone: true, note: true, opening: true, hidden: true },
+      orderBy: [{ hidden: 'asc' }, { name: 'asc' }],
     });
   }
 
-  /** حركات التخليص (مصاريف وسدادات) في فترة، مع العربية والمخلّص. */
+  createAgent(data: { name: string; phone: string | null; note: string | null }) {
+    return this.prisma.party.create({
+      data: { ...data, role: 'CLEARANCE', type: 'LEDGER' },
+      select: { uid: true, name: true, phone: true, note: true, hidden: true },
+    });
+  }
+
+  updateAgent(id: number, data: { name?: string; phone?: string | null; note?: string | null; hidden?: boolean }) {
+    return this.prisma.party.update({
+      where: { id },
+      data,
+      select: { uid: true, name: true, phone: true, note: true, hidden: true },
+    });
+  }
+
+  /** ارتباطات المكتب اللي بتمنع حذفه — أي حركة على حسابه. */
+  countAgentTransactions(partyId: number) {
+    return this.prisma.transaction.count({ where: { partyId } });
+  }
+
+  deleteAgent(id: number) {
+    return this.prisma.party.delete({ where: { id } });
+  }
+
+  /** صافي (عليه − له) لكل مكتب من كل حركاته — من غير الرصيد الافتتاحي. */
+  async netByParty(partyIds: number[]) {
+    if (!partyIds.length) return new Map<number, number>();
+    const agg = await this.prisma.transaction.groupBy({
+      by: ['partyId'],
+      where: { partyId: { in: partyIds } },
+      _sum: { debit: true, credit: true },
+    });
+    return new Map(agg.map((a) => [a.partyId as number, (a._sum.debit || 0) - (a._sum.credit || 0)]));
+  }
+
+  /** صافي (عليه − له) لمكتب قبل تاريخ — الرصيد المرحّل في أول كشف الحساب. */
+  async netBefore(partyId: number, before: Date) {
+    const agg = await this.prisma.transaction.aggregate({
+      where: { partyId, date: { lt: before } },
+      _sum: { debit: true, credit: true },
+    });
+    return (agg._sum.debit || 0) - (agg._sum.credit || 0);
+  }
+
+  /** حركات التخليص (مصاريف ودفعات) في فترة، مع العربية والمكتب. */
   listMovements(where: { agentId?: number; from?: Date; to?: Date }) {
     return this.prisma.transaction.findMany({
       where: {
         type: { in: [CLEARANCE_EXPENSE_TYPE, CLEARANCE_PAY_TYPE] },
         ...(where.agentId ? { partyId: where.agentId } : {}),
-        ...(where.from || where.to
-          ? { date: { ...(where.from ? { gte: where.from } : {}), ...(where.to ? { lte: where.to } : {}) } }
-          : {}),
+        ...dateRange(where.from, where.to),
       },
-      include: {
-        party: { select: { uid: true, name: true } },
-        manifest: { select: { uid: true, no: true, date: true, clientName: true, vehicleLabel: true, vehicleNo: true } },
-        category: { select: { uid: true, name: true } },
-        treasury: { select: { uid: true, name: true } },
-      },
+      include: MOVEMENT_INCLUDE,
       orderBy: [{ date: 'desc' }, { id: 'desc' }],
     });
   }
 
-  createMovement(data: {
-    date: Date; type: string; partyId: number;
-    debit?: number; credit?: number;
-    cashOut?: number; treasuryId?: number;
-    manifestId?: number; categoryId?: number;
-    note?: string; createdById?: number;
-  }) {
-    const { debit = 0, credit = 0, cashOut = 0, ...rest } = data;
-    return this.prisma.transaction.create({
-      data: { ...rest, debit, credit, cashOut },
-      include: {
-        party: { select: { uid: true, name: true } },
-        manifest: { select: { uid: true, no: true } },
-      },
+  /** كل حركات حساب المكتب في فترة (أي نوع) — أقدم أولاً عشان الرصيد التراكمي. */
+  statementRows(partyId: number, from?: Date, to?: Date) {
+    return this.prisma.transaction.findMany({
+      where: { partyId, ...dateRange(from, to) },
+      include: MOVEMENT_INCLUDE,
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     });
+  }
+
+  createMovement(data: MovementData) {
+    return this.prisma.transaction.create({ data: toRow(data), include: MOVEMENT_INCLUDE });
+  }
+
+  /** رجلين مع بعض أو ولا واحدة (التخليص النقدي: مصروف + دفعة). */
+  createMovements(rows: MovementData[]) {
+    return this.prisma.$transaction(
+      rows.map((r) => this.prisma.transaction.create({ data: toRow(r), include: MOVEMENT_INCLUDE })),
+    );
   }
 
   findMovementByUid(uid: string) {
     return this.prisma.transaction.findUnique({ where: { uid } });
   }
+
+  findGroup(groupId: string) {
+    return this.prisma.transaction.findMany({ where: { groupId } });
+  }
+
+  /** تعديل أكتر من رجل في نفس الوقت (ذرّي). */
+  updateMovements(updates: { id: number; data: Prisma.TransactionUncheckedUpdateInput }[]) {
+    return this.prisma.$transaction(
+      updates.map((u) => this.prisma.transaction.update({ where: { id: u.id }, data: u.data, include: MOVEMENT_INCLUDE })),
+    );
+  }
+}
+
+function toRow(data: MovementData): Prisma.TransactionUncheckedCreateInput {
+  const { debit = 0, credit = 0, cashOut = 0, ...rest } = data;
+  // كل حركات التخليص نشاطها شحن.
+  return { ...rest, debit, credit, cashOut, activity: 'SHIPPING' };
+}
+
+// `to` شامل اليوم كله — نفس منطق باقي الشاشات.
+function dateRange(from?: Date, to?: Date) {
+  if (!from && !to) return {};
+  return {
+    date: {
+      ...(from ? { gte: from } : {}),
+      ...(to ? { lt: new Date(to.getTime() + 86400000) } : {}),
+    },
+  };
 }

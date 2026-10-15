@@ -9,11 +9,16 @@ const invoiceServiceItems = {
   select: { qty: true, price: true, product: { select: { name: true } } },
 } as const;
 
+// بنود الشحن (جدول InvoiceCharge) — المكان الجديد للنولون/التحميل/الشفتنة على الفاتورة.
+const invoiceCharges = {
+  select: { qty: true, price: true, chargeType: { select: { name: true } } },
+} as const;
+
 const include = {
   manifest: { select: { uid: true, no: true } },
   party: { select: { uid: true, name: true } },
   payments: { orderBy: { date: 'asc' as const } },
-  invoice: { select: { uid: true, no: true, date: true, items: invoiceServiceItems } },
+  invoice: { select: { uid: true, no: true, date: true, items: invoiceServiceItems, charges: invoiceCharges } },
 };
 
 @Injectable()
@@ -85,13 +90,13 @@ export class DriverTripsRepository {
         partyId,
         kind: 'SALE',
         fake: false,
-        items: { some: { product: { service: true } } },
+        AND: [{ OR: [{ items: { some: { product: { service: true } } } }, { charges: { some: {} } }] }],
         OR: [
           { driverTrip: { is: null } },
           ...(currentInvoiceId ? [{ id: currentInvoiceId }] : []),
         ],
       },
-      select: { uid: true, no: true, date: true, items: invoiceServiceItems },
+      select: { uid: true, no: true, date: true, items: invoiceServiceItems, charges: invoiceCharges },
       orderBy: { date: 'desc' },
       take: 50,
     });

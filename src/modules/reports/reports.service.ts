@@ -1,12 +1,255 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceKind } from '@prisma/client';
+import { Activity, InvoiceKind } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { BalancesService } from '../balances/balances.service';
+import { computeVehicleProfits } from '../../common/vehicle-profit';
+
+// حركات المصاريف اللي بتتوزّع على النشاطين في تقريري التجارة والشحن.
+const EXPENSE_TYPES = ['مصروف', 'مصروف مخزن'];
 
 // Business-intelligence reports aggregated from invoices/returns. The app's scale (a few
 // thousand rows) makes in-memory aggregation simpler and fast enough vs. raw SQL.
 @Injectable()
 export class ReportsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private balances: BalancesService) {}
+
+  // مبلغ حركة مصروف: صرف − توريد، أو مبلغ المصروف من غير خزنة (تسوية عهدة كمصروف).
+  private expenseAmount(t: { cashOut: number; cashIn: number; expAmt: number }) {
+    return (t.cashOut || 0) - (t.cashIn || 0) || t.expAmt || 0;
+  }
+
+  // نصيب النشاط من مبلغ: المشترك بيتقسم بالنسبة المتثبّتة على الحركة.
+  private portion(amount: number, activity: Activity, shippingPct: number | null, want: 'TRADE' | 'SHIPPING') {
+    if (activity === 'SHARED') {
+      const ship = (shippingPct ?? 50) / 100;
+      return amount * (want === 'SHIPPING' ? ship : 1 - ship);
+    }
+    return activity === want ? amount : 0;
+  }
+
+  private async expenseRows(from?: string, to?: string) {
+    const date = this.range(from, to);
+    return this.prisma.transaction.findMany({
+      where: { type: { in: EXPENSE_TYPES }, ...(date ? { date } : {}) },
+      select: {
+        type: true, activity: true, shippingPct: true, manifestId: true,
+        cashOut: true, cashIn: true, expAmt: true,
+        category: { select: { name: true, vehicleLink: true, addsToGoods: true } },
+      },
+    });
+  }
+
+  /**
+   * تقرير التجارة: مبيعات الأصناف، تكلفتها، ربح التجارة، والمخزون.
+   * التكلفة = الكمية المباعة × متوسط تكلفة الصنف (شامل الناولون الداخلي والشاي والعمولة)،
+   * أو سعر التقييم اليدوي لو متحدد على الصنف — نفس تقييم المخزون.
+   */
+  async tradeReport(from?: string, to?: string) {
+    const date = this.range(from, to);
+    const invoices = await this.prisma.invoice.findMany({
+      where: { fake: false, ...(date ? { date } : {}) },
+      select: {
+        kind: true, discount: true,
+        items: { select: { qty: true, price: true, productId: true, product: { select: { uid: true, name: true, unit: true, service: true } } } },
+      },
+    });
+    const returns = await this.prisma.return.findMany({
+      where: date ? { date } : {},
+      select: { kind: true, items: { select: { qty: true, price: true, productId: true, product: { select: { service: true } } } } },
+    });
+
+    // متوسط التكلفة لكل صنف اتباع في الفترة — مرة واحدة لكل صنف.
+    const products = await this.prisma.product.findMany({ where: { service: false }, select: { id: true, price: true } });
+    const manual = new Map(products.map((p) => [p.id, p.price]));
+    const costCache = new Map<number, number>();
+    const unitCost = async (productId: number) => {
+      if (!costCache.has(productId)) {
+        const m = manual.get(productId) ?? 0;
+        costCache.set(productId, m > 0 ? m : await this.balances.avgCost(productId));
+      }
+      return costCache.get(productId)!;
+    };
+
+    let sales = 0, salesDiscount = 0, cogs = 0, purchases = 0, salesCount = 0;
+    const byProduct = new Map<string, { name: string; unit: string | null; qty: number; sales: number; cost: number }>();
+    for (const inv of invoices) {
+      const goods = inv.items.filter((it) => !it.product?.service);
+      const total = goods.reduce((s, it) => s + it.qty * it.price, 0);
+      // الخصم بيتخصم من الأصناف الأول — نفس ترحيل الفاتورة.
+      const disc = Math.min(inv.discount || 0, total);
+      if (inv.kind === InvoiceKind.PURCHASE) { purchases += total - disc; continue; }
+      if (goods.length) salesCount += 1;
+      sales += total;
+      salesDiscount += disc;
+      for (const it of goods) {
+        const c = it.qty * (await unitCost(it.productId));
+        cogs += c;
+        const key = it.product.uid;
+        const row = byProduct.get(key) ?? { name: it.product.name, unit: it.product.unit, qty: 0, sales: 0, cost: 0 };
+        row.qty += it.qty; row.sales += it.qty * it.price; row.cost += c;
+        byProduct.set(key, row);
+      }
+    }
+    let salesReturns = 0, returnsCost = 0;
+    for (const r of returns) {
+      if (r.kind !== InvoiceKind.SALE) continue;
+      for (const it of r.items) {
+        if (it.product?.service) continue;
+        salesReturns += it.qty * it.price;
+        returnsCost += it.qty * (await unitCost(it.productId));
+      }
+    }
+
+    const expenses = await this.expenseRows(from, to);
+    let tradeExpenses = 0;
+    const expByCat = new Map<string, number>();
+    for (const e of expenses) {
+      const amt = this.portion(this.expenseAmount(e), e.activity, e.shippingPct, 'TRADE');
+      if (!amt) continue;
+      tradeExpenses += amt;
+      const k = e.category?.name ?? 'بدون بند';
+      expByCat.set(k, (expByCat.get(k) ?? 0) + amt);
+    }
+
+    const warehouses = await this.prisma.warehouse.findMany({ select: { id: true, uid: true, name: true } });
+    const inventory = await Promise.all(warehouses.map(async (w) => ({
+      id: w.uid, name: w.name, value: await this.balances.warehouseValue(w.id),
+    })));
+
+    const netSales = sales - salesDiscount - salesReturns;
+    const cost = cogs - returnsCost;
+    const grossProfit = netSales - cost;
+    return {
+      sales, salesDiscount, salesReturns, netSales, salesCount,
+      cost, grossProfit,
+      expenses: tradeExpenses,
+      expensesByCategory: [...expByCat.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
+      netProfit: grossProfit - tradeExpenses,
+      purchases,
+      products: [...byProduct.entries()]
+        .map(([id, v]) => ({ id, ...v, profit: v.sales - v.cost }))
+        .sort((a, b) => b.sales - a.sales),
+      // المخزون الحالي (مش مرتبط بالفترة)
+      inventory: { total: inventory.reduce((s, w) => s + w.value, 0), warehouses: inventory },
+    };
+  }
+
+  /**
+   * تقرير الشحن: إيرادات البنود، تكاليف العربيات، مصاريف المخزن، وربح الشحن.
+   *   الإيراد = بنود الشحن على فواتير البيع (+ الأصناف الخدمية القديمة) + العطلة وفرق الوزن على العملاء
+   *   تكاليف العربيات = الإيجار + الجمرك والتخليص + التحميل والشفتنة + عطلة وفرق وزن وشاي السائقين
+   *                     + بنود الشحن على فواتير الشراء
+   *   مصاريف المخزن = مصاريف بنشاط الشحن (غير التحميل والشفتنة) + نصيب الشحن من المرتبات
+   */
+  async shippingSummary(from?: string, to?: string) {
+    const date = this.range(from, to);
+    const dateWhere = date ? { date } : {};
+
+    const charges = await this.prisma.invoiceCharge.findMany({
+      where: { invoice: { fake: false, ...dateWhere } },
+      select: { qty: true, price: true, chargeType: { select: { name: true } }, invoice: { select: { kind: true } } },
+    });
+    const legacy = await this.prisma.invoiceItem.findMany({
+      where: { product: { service: true }, invoice: { fake: false, ...dateWhere } },
+      select: { qty: true, price: true, product: { select: { name: true } }, invoice: { select: { kind: true } } },
+    });
+    const incomeBy = new Map<string, number>();
+    const purchaseChargesBy = new Map<string, number>();
+    for (const c of [
+      ...charges.map((c) => ({ name: c.chargeType.name, total: c.qty * c.price, kind: c.invoice.kind })),
+      ...legacy.map((l) => ({ name: l.product.name, total: l.qty * l.price, kind: l.invoice.kind })),
+    ]) {
+      const m = c.kind === InvoiceKind.SALE ? incomeBy : purchaseChargesBy;
+      m.set(c.name, (m.get(c.name) ?? 0) + c.total);
+    }
+
+    const sumType = async (types: string[], field: 'debit' | 'credit' | 'cashOut') => {
+      const agg = await this.prisma.transaction.aggregate({ where: { type: { in: types }, ...dateWhere }, _sum: { [field]: true } as any });
+      return Number((agg._sum as any)[field]) || 0;
+    };
+    const truckDelay = await sumType(['truckDelay'], 'debit');
+    const truckWeightDiff = await sumType(['truckWeightDiff'], 'debit');
+    const customs = await sumType(['جمارك'], 'credit');
+    const driverExtras = await sumType(['driverDelay', 'driverWeightDiff', 'driverTea'], 'cashOut');
+
+    const trips = await this.prisma.driverTrip.aggregate({
+      where: date ? { departureDate: date } : {},
+      _sum: { agreedFreight: true },
+      _count: true,
+    });
+    const rent = trips._sum.agreedFreight || 0;
+
+    const expenses = await this.expenseRows(from, to);
+    const vehicleBy = new Map<string, number>();
+    const warehouseBy = new Map<string, number>();
+    for (const e of expenses) {
+      const amt = this.portion(this.expenseAmount(e), e.activity, e.shippingPct, 'SHIPPING');
+      if (!amt) continue;
+      const m = e.category?.vehicleLink ? vehicleBy : warehouseBy;
+      const k = e.category?.name ?? (e.type === 'مصروف مخزن' ? 'مصاريف مخزن (بدون بند)' : 'مصاريف (بدون بند)');
+      m.set(k, (m.get(k) ?? 0) + amt);
+    }
+
+    const list = (m: Map<string, number>) =>
+      [...m.entries()].map(([name, total]) => ({ name, total })).filter((x) => Math.abs(x.total) > 0.001).sort((a, b) => b.total - a.total);
+    const total = (xs: { total: number }[]) => xs.reduce((s, x) => s + x.total, 0);
+
+    const incomeCharges = list(incomeBy);
+    const income = {
+      charges: incomeCharges,
+      chargesTotal: total(incomeCharges),
+      truckDelay,
+      truckWeightDiff,
+    };
+    const incomeTotal = income.chargesTotal + truckDelay + truckWeightDiff;
+
+    const vehicleExpenses = list(vehicleBy);
+    const purchaseCharges = list(purchaseChargesBy);
+    const vehicleCosts = {
+      rent,
+      customs,
+      loading: vehicleExpenses, // التحميل والشفتنة (وأي بند مربوط بعربية)
+      loadingTotal: total(vehicleExpenses),
+      driverExtras,              // عطلة وفرق وزن وشاي السائقين
+      purchaseCharges,           // بنود شحن على فواتير الشراء
+      purchaseChargesTotal: total(purchaseCharges),
+    };
+    const vehicleCostsTotal = rent + customs + vehicleCosts.loadingTotal + driverExtras + vehicleCosts.purchaseChargesTotal;
+
+    const warehouseExpenses = list(warehouseBy);
+    const warehouseTotal = total(warehouseExpenses);
+
+    return {
+      income, incomeTotal,
+      vehicleCosts, vehicleCostsTotal,
+      warehouseExpenses, warehouseTotal,
+      trips: trips._count,
+      profit: incomeTotal - vehicleCostsTotal - warehouseTotal,
+    };
+  }
+
+  /** ربح كل عربية لوحدها في الفترة (بتاريخ الكشف). */
+  async vehicleProfits(from?: string, to?: string) {
+    const date = this.range(from, to);
+    const rows = await computeVehicleProfits(this.prisma, date ? { date } : {});
+    const vehicles = rows.map((r) => ({
+      id: r.id, no: r.no, date: r.date, clientName: r.clientName,
+      vehicleNo: r.vehicleNo, trailerNo: r.trailerNo, vehicleLabel: r.vehicleLabel, driverName: r.driverName,
+      invoice: r.invoice,
+      revenue: r.revenueTotal,
+      rent: r.rent.total,
+      customs: r.customs.total,
+      loading: r.vehicleExpenses.total,
+      costs: r.costs,
+      profit: r.profit,
+      unassigned: r.unassignedCharges.reduce((s, c) => s + c.total, 0),
+    }));
+    const sum = (k: 'revenue' | 'rent' | 'customs' | 'loading' | 'costs' | 'profit') => vehicles.reduce((s, v) => s + v[k], 0);
+    return {
+      vehicles,
+      totals: { revenue: sum('revenue'), rent: sum('rent'), customs: sum('customs'), loading: sum('loading'), costs: sum('costs'), profit: sum('profit') },
+    };
+  }
 
   private range(from?: string, to?: string) {
     if (!from && !to) return undefined;
@@ -146,6 +389,15 @@ export class ReportsService {
         purchases += goods; purchasesCount += 1; servicesPaid += services; addedCosts += extra;
       }
     }
+    // بنود الشحن في جدولها المنفصل — نفس معاملة الأصناف الخدمية القديمة.
+    const charges = await this.prisma.invoiceCharge.findMany({
+      where: { invoice: { fake: false, ...(date ? { date } : {}) } },
+      select: { qty: true, price: true, invoice: { select: { kind: true } } },
+    });
+    for (const c of charges) {
+      if (c.invoice.kind === InvoiceKind.SALE) servicesCollected += c.qty * c.price;
+      else servicesPaid += c.qty * c.price;
+    }
     const returns = await this.prisma.return.findMany({
       where: date ? { date } : {},
       select: { kind: true, items: { select: { qty: true, price: true, product: { select: { service: true } } } } },
@@ -164,53 +416,6 @@ export class ReportsService {
       netSales: sales - salesReturns,
       grossProfit: (sales - salesReturns) - (purchases + addedCosts - purchaseReturns),
       services: { collected: servicesCollected, paid: servicesPaid },
-    };
-  }
-
-  // الشحن — نشاط التريلات لوحده. الإيراد بيتسجّل كبنود خدمات على فاتورة البيع
-  // (ناولون/تحميل/شفتنة…)، والتكلفة في كشف السائق (`agreedFreight`) والجمارك ومصاريف
-  // المخزن. العطلة وفرق الوزن محمولين على العميل فبيتحسبوا إيراد.
-  async shippingSummary(from?: string, to?: string) {
-    const date = this.range(from, to);
-    const s = await this.summary(from, to);
-
-    const trips = await this.prisma.driverTrip.aggregate({
-      where: date ? { departureDate: date } : {},
-      _sum: { agreedFreight: true, delayFee: true, weightDiffAmount: true },
-      _count: true,
-    });
-    const driverFreight = trips._sum.agreedFreight || 0;
-    const delay = trips._sum.delayFee || 0;
-    const weightDiff = trips._sum.weightDiffAmount || 0;
-
-    const net = (agg: { _sum: { cashOut: number | null; cashIn: number | null } }) =>
-      (agg._sum.cashOut || 0) - (agg._sum.cashIn || 0);
-
-    // 'جمارك' = CLEARANCE_EXPENSE_TYPE. 'سداد مخلّص' سداد لحساب المخلّص مش مصروف
-    // جديد، فمش داخل هنا عشان مايتعدّش مرتين.
-    const customsAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'جمارك', ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    const warehouseAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    const customs = net(customsAgg);
-    // 'مصروف مخزن' مخلوط: تحميل (تكلفة نقلة) مع إيجار ومرتبات (مصاريف عامة). مفيش
-    // في الداتا حاجة تفصلهم، فبيرجع للعرض بس ومش داخل في `paid` عشان ميضخّمش تكلفة
-    // الشحن بمصاريف مالهاش علاقة بالنقلة.
-    const warehouse = net(warehouseAgg);
-
-    const collected = s.services.collected + delay + weightDiff;
-    const paid = driverFreight + s.services.paid + customs;
-    return {
-      collected, paid, profit: collected - paid,
-      trips: trips._count,
-      // التفصيل — عشان تقدر تشوف أي رقم جاي منين وتكشف أي إدخال غلط
-      income: { invoiceServices: s.services.collected, delay, weightDiff },
-      costs: { driverFreight, invoiceServices: s.services.paid, customs },
-      warehouseNote: warehouse,
     };
   }
 

@@ -20,6 +20,16 @@ export class InvoiceItemDto {
   @IsOptional() @IsString() commissionPartyId?: string;
 }
 
+// بند شحن على الفاتورة (نولون/تحميل/شفتنة…) — منفصل عن الأصناف ولا يؤثر على المخزون.
+export class InvoiceChargeDto {
+  @IsString() chargeTypeId: string;
+  @IsOptional() @IsNumber() qty?: number; // الافتراضي 1
+  @IsNumber() price: number;
+  @IsOptional() @IsString() note?: string;
+  // العربية اللي البند إيرادها (اختياري) — بيتحفظ مع التعديل زي ما هو.
+  @IsOptional() @IsString() manifestId?: string;
+}
+
 export class CreateInvoiceDto {
   @IsEnum(InvoiceKind) kind: InvoiceKind;
   @IsOptional() @IsString() no?: string; // auto-numbered per kind when omitted
@@ -29,6 +39,9 @@ export class CreateInvoiceDto {
 
   @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceItemDto)
   items: InvoiceItemDto[];
+
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceChargeDto)
+  charges?: InvoiceChargeDto[];
 
   @IsOptional() @IsNumber() paid?: number;
   @IsOptional() @IsNumber() discount?: number;
@@ -50,6 +63,9 @@ export class UpdateInvoiceDto {
 
   @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceItemDto)
   items: InvoiceItemDto[];
+
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceChargeDto)
+  charges?: InvoiceChargeDto[];
 
   @IsOptional() @IsNumber() paid?: number;
   @IsOptional() @IsNumber() discount?: number;

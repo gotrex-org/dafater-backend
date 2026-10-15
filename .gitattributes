@@ -1,0 +1,2 @@
+# ملفات الشل لازم LF: docker-entrypoint.sh بـ CRLF يوقف الـ API بـ "set: illegal option"
+*.sh text eol=lf

@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { computeVehicleProfits } from '../../common/vehicle-profit';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 import { ManifestsRepository } from './manifests.repository';
@@ -9,7 +11,26 @@ export class ManifestsService {
   constructor(
     private repo: ManifestsRepository,
     private driversService: DriversService,
+    private prisma: PrismaService,
   ) {}
+
+  async shipping(uid: string) {
+    const [row] = await computeVehicleProfits(this.prisma, { uid });
+    if (!row) throw new NotFoundException('الكشف غير موجود');
+    return row;
+  }
+
+  /** ربط/فك بند شحن من فاتورة العربية بالعربية. */
+  async assignCharge(uid: string, chargeUid: string, assign: boolean) {
+    const m = await this.prisma.manifest.findUnique({ where: { uid }, select: { id: true, invoiceId: true } });
+    if (!m) throw new NotFoundException('الكشف غير موجود');
+    const c = await this.prisma.invoiceCharge.findUnique({ where: { uid: chargeUid }, select: { id: true, invoiceId: true, manifestId: true } });
+    if (!c) throw new NotFoundException('البند غير موجود');
+    if (c.invoiceId !== m.invoiceId) throw new BadRequestException('البند ليس على فاتورة هذه العربية');
+    if (!assign && c.manifestId !== m.id) throw new BadRequestException('البند غير مربوط بهذه العربية');
+    await this.prisma.invoiceCharge.update({ where: { id: c.id }, data: { manifestId: assign ? m.id : null } });
+    return { ok: true };
+  }
 
   findAll(q: PaginationQueryDto) { return this.repo.findAll(q); }
   /**

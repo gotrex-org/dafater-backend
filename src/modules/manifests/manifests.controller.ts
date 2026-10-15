@@ -28,6 +28,19 @@ export class ManifestsController {
     return this.service.peekNextNo(clientName);
   }
 
+  // قسم «تكاليف الشحن» في كشف العربية — الإيراد والتكاليف والربح.
+  @Get(':id/shipping')
+  shipping(@Param('id') id: string) {
+    return this.service.shipping(id);
+  }
+
+  // ربط بند شحن من فاتورة العربية بالعربية دي (لما الفاتورة عليها أكتر من عربية).
+  @Patch(':id/charges/:chargeId')
+  @Permissions('manifests.shipping')
+  assignCharge(@Param('id') id: string, @Param('chargeId') chargeId: string, @Body() body: { assign?: boolean }) {
+    return this.service.assignCharge(id, chargeId, body?.assign !== false);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.service.findOne(id);

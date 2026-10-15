@@ -15,7 +15,8 @@ export class ExpenseCategoriesController {
   }
 
   @Post()
-  @Permissions('settings')
+  // الإضافة والحذف متاحين كمان من شاشة صرف وتوريد النقدية
+  @Permissions('settings', 'entry.expense')
   create(@Body() dto: CategoryDto) {
     return this.service.create(dto);
   }
@@ -27,7 +28,7 @@ export class ExpenseCategoriesController {
   }
 
   @Delete(':id')
-  @Permissions('settings')
+  @Permissions('settings', 'entry.expense')
   remove(@Param('id') id: string) {
     return this.service.remove(id);
   }

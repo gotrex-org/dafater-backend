@@ -38,6 +38,8 @@ import { DiscountsModule } from './modules/discounts/discounts.module';
 import { WarehouseExpensesModule } from './modules/warehouse-expenses/warehouse-expenses.module';
 import { ClearanceModule } from './modules/clearance/clearance.module';
 import { AssistantModule } from './modules/assistant/assistant.module';
+import { SettlementModule } from './modules/settlement/settlement.module';
+import { ChargeTypesModule } from './modules/charge-types/charge-types.module';
 
 @Module({
   imports: [
@@ -83,6 +85,8 @@ import { AssistantModule } from './modules/assistant/assistant.module';
     WarehouseExpensesModule,
     ClearanceModule,
     AssistantModule,
+    SettlementModule,
+    ChargeTypesModule,
   ],
   providers: [
     // Rate limit first, then JWT (authenticate), then RBAC (authorize)

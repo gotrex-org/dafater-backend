@@ -198,6 +198,7 @@ export class TransactionsService {
             category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
             treasury: { connect: { uid: dto.treasuryId } },
             ...treasuryLeg, note: dto.note,
+            ...(dto.manifestId ? { manifest: { connect: { uid: dto.manifestId } } } : {}),
           });
           const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
           this.logTxn(user, 'CREATE', tx.uid,
@@ -213,6 +214,8 @@ export class TransactionsService {
             category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
             treasury: { connect: { uid: dto.treasuryId } },
             ...treasuryLeg, note: dto.note,
+            // تحميل/شفتنة مربوطة بعربية — بتظهر في تكاليف الشحن في كشفها.
+            ...(dto.manifestId ? { manifest: { connect: { uid: dto.manifestId } } } : {}),
           });
           const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
           this.logTxn(user, 'CREATE', tx.uid,

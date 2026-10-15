@@ -193,19 +193,29 @@ export class InvoicesService {
 
   create(dto: CreateInvoiceDto, createdById?: number) {
     this.assertTreasuryForExtras(dto);
-    const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
+    const { itemsTotal, chargesTotal, total } = this.totals(dto);
     const paid = dto.paid || 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
     const isSale = dto.kind === InvoiceKind.SALE;
-    return this.repo.create(dto, { total, paid, discount, isSale, createdById });
+    return this.repo.create(dto, { itemsTotal, chargesTotal, paid, discount, isSale, createdById });
   }
 
   update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
     this.assertTreasuryForExtras(dto);
-    const total = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
+    const { itemsTotal, chargesTotal, total } = this.totals(dto);
     const paid = dto.paid ?? 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
-    return this.repo.update(id, dto, { total, paid, discount, createdById });
+    return this.repo.update(id, dto, { itemsTotal, chargesTotal, paid, discount, createdById });
+  }
+
+  // إجمالي الفاتورة = إجمالي الأصناف (تجارة) + إجمالي بنود الشحن (شحن).
+  private totals(dto: CreateInvoiceDto | UpdateInvoiceDto) {
+    if (!dto.items.length && !dto.charges?.length) {
+      throw new BadRequestException('أضف صنفاً أو بند شحن واحداً على الأقل');
+    }
+    const itemsTotal = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
+    const chargesTotal = (dto.charges ?? []).reduce((s, c) => s + (c.qty ?? 1) * c.price, 0);
+    return { itemsTotal, chargesTotal, total: itemsTotal + chargesTotal };
   }
 
   updateCommission(uid: string, dto: CommissionDto) { return this.repo.updateCommission(uid, dto); }

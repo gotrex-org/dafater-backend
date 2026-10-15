@@ -8,15 +8,18 @@ function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-type TripInvoice = { items: { qty: number; price: number; product: { name: string } | null }[] } | null;
+type TripInvoice = {
+  items: { qty: number; price: number; product: { name: string } | null }[];
+  charges?: { qty: number; price: number; chargeType: { name: string } | null }[];
+} | null;
 
-// اللي بيتحصّل من العميل مقابل النقلة = بنود الخدمات على الفاتورة المربوطة، مقابل
-// `agreedFreight` اللي بيتدفع للسواق. الفرق هو مكسب النقلة.
+// اللي بيتحصّل من العميل مقابل النقلة = بنود الشحن على الفاتورة المربوطة (+ بنود
+// الخدمات القديمة المسجّلة كأصناف)، مقابل `agreedFreight` اللي بيتدفع للسواق.
 function tripMargin(invoice: TripInvoice, agreedFreight: number) {
-  const lines = (invoice?.items ?? []).map((it) => ({
-    name: it.product?.name ?? '—',
-    total: it.qty * it.price,
-  }));
+  const lines = [
+    ...(invoice?.charges ?? []).map((c) => ({ name: c.chargeType?.name ?? '—', total: c.qty * c.price })),
+    ...(invoice?.items ?? []).map((it) => ({ name: it.product?.name ?? '—', total: it.qty * it.price })),
+  ];
   const collected = lines.reduce((s, l) => s + l.total, 0);
   return { collectedFreight: collected, collectedLines: lines, tripProfit: collected - agreedFreight };
 }

@@ -36,6 +36,9 @@ const FK_RELATIONS: Record<string, string> = {
   manifestId: 'manifest',
   requestId: 'request',
   orderId: 'order',
+  priceListId: 'priceList',
+  partnerId: 'partner',
+  chargeTypeId: 'chargeType',
 };
 
 @Injectable()

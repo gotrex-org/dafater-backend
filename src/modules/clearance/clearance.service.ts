@@ -1,42 +1,81 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { BalancesService } from '../balances/balances.service';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Currency, Prisma } from '@prisma/client';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AddClearanceExpenseDto, ClearanceQueryDto, PayClearanceAgentDto } from './dto/clearance.dto';
+import {
+  AddCashClearanceDto, AddClearanceExpenseDto, ClearanceAgentDto, ClearanceQueryDto,
+  PayClearanceAgentDto, UpdateClearanceAgentDto, UpdateClearanceMovementDto,
+} from './dto/clearance.dto';
 import { CLEARANCE_EXPENSE_TYPE, CLEARANCE_PAY_TYPE, ClearanceRepository } from './clearance.repository';
 
 @Injectable()
 export class ClearanceService {
   constructor(
     private repo: ClearanceRepository,
-    private balances: BalancesService,
     private prisma: PrismaService,
   ) {}
 
-  agents() { return this.repo.listAgents(); }
+  agents(includeArchived = false) { return this.repo.listAgents(includeArchived); }
+
+  // ───────────────────────────── المكاتب ─────────────────────────────
+
+  /** مكتب تخليص جديد — طرف بدور CLEARANCE ليه حساب جاري. */
+  async createAgent(dto: ClearanceAgentDto) {
+    const name = dto.name.trim();
+    const dup = await this.prisma.party.findFirst({ where: { name, role: 'CLEARANCE' } });
+    if (dup) throw new ConflictException(dup.hidden ? 'يوجد مكتب مؤرشف بنفس الاسم. يمكن استعادته من المكاتب المؤرشفة' : 'يوجد مكتب تخليص بنفس الاسم');
+    return this.repo.createAgent({ name, phone: dto.phone?.trim() || null, note: dto.note?.trim() || null });
+  }
+
+  async updateAgent(uid: string, dto: UpdateClearanceAgentDto) {
+    const agent = await this.requireAgent(uid, true);
+    if (dto.name !== undefined) {
+      const dup = await this.prisma.party.findFirst({ where: { name: dto.name.trim(), role: 'CLEARANCE', NOT: { id: agent.id } } });
+      if (dup) throw new ConflictException('يوجد مكتب تخليص بنفس الاسم');
+    }
+    return this.repo.updateAgent(agent.id, {
+      ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone.trim() || null } : {}),
+      ...(dto.note !== undefined ? { note: dto.note.trim() || null } : {}),
+    });
+  }
+
+  /** أرشفة/استعادة — المؤرشف بيختفي من القوايم والاختيارات، وحساباته زي ما هي. */
+  async archiveAgent(uid: string, archived: boolean) {
+    const agent = await this.requireAgent(uid, true);
+    return this.repo.updateAgent(agent.id, { hidden: archived });
+  }
+
+  /** حذف — للمكتب اللي مالوش أي حركة بس. غير كده الأرشفة. */
+  async deleteAgent(uid: string) {
+    const agent = await this.requireAgent(uid, true);
+    const n = await this.repo.countAgentTransactions(agent.id);
+    if (n > 0 || (agent.opening || 0) !== 0) {
+      throw new ConflictException(`المكتب عليه ${n} حركة، لذلك لا يمكن حذفه. يمكن أرشفته بدلاً من الحذف`);
+    }
+    await this.repo.deleteAgent(agent.id);
+    return { ok: true };
+  }
+
+  // ───────────────────────────── القوائم والكشف ─────────────────────────────
 
   /**
-   * حركات التخليص + ملخّص لكل مخلّص.
-   * الرصيد بييجي من BalancesService زي أي طرف — بالسالب معناه إحنا مدينين له.
+   * حركات التخليص + ملخّص لكل مكتب. `due` موجب = المستحق للمكتب علينا.
+   * رصيد الطرف في النظام موجب = هو مدين لنا، فبنقلب الإشارة.
    */
   async list(q: ClearanceQueryDto) {
     let agentId: number | undefined;
-    if (q.agentId) {
-      const a = await this.repo.findPartyByUid(q.agentId);
-      if (!a) throw new NotFoundException('المخلّص مش موجود');
-      agentId = a.id;
-    }
+    if (q.agentId) agentId = (await this.requireAgent(q.agentId, true)).id;
     const movements = await this.repo.listMovements({
       agentId,
       from: q.from ? new Date(q.from) : undefined,
       to: q.to ? new Date(q.to) : undefined,
     });
 
-    const agents = await this.repo.listAgents();
-    const balances = await this.balances.partyBalanceMulti(agents.map((a) => a.id));
-    const byId = new Map(agents.map((a) => [a.id, a]));
+    const agents = await this.repo.listAgents(q.archived === '1');
+    const net = await this.repo.netByParty(agents.map((a) => a.id));
 
-    // إجماليات الفترة لكل مخلّص: المصاريف اللي اترحّلت له واللي اتسدّد منها
+    // إجماليات الفترة لكل مكتب: اللي اترحّل له واللي اتدفع له
     const totals = new Map<number, { expenses: number; paid: number }>();
     for (const m of movements) {
       if (!m.partyId) continue;
@@ -52,93 +91,254 @@ export class ClearanceService {
         uid: a.uid,
         name: a.name,
         phone: a.phone,
+        note: a.note,
+        hidden: a.hidden,
         expenses: totals.get(a.id)?.expenses ?? 0,
         paid: totals.get(a.id)?.paid ?? 0,
-        // موجب = له عندنا (إحنا مدينين). balance من النظام موجب = هو مدين لنا،
-        // فبنقلب الإشارة عشان الشاشة تقرا «المستحق للمخلّص».
-        due: -(balances[a.id] ?? 0),
+        due: -((a.opening || 0) + (net.get(a.id) ?? 0)),
       })),
     };
   }
 
-  /** مصروف جمارك على عربية — بيترحّل على حساب المخلّص. */
+  /**
+   * كشف حساب مكتب: الرصيد المرحّل قبل الفترة، وكل حركة برصيدها بعدها.
+   * الرصيد هنا = المستحق للمكتب (له − عليه).
+   */
+  async statement(uid: string, q: ClearanceQueryDto) {
+    const agent = await this.requireAgent(uid, true);
+    const from = q.from ? new Date(q.from) : undefined;
+    const to = q.to ? new Date(q.to) : undefined;
+    const before = from ? await this.repo.netBefore(agent.id, from) : 0;
+    let balance = -((agent.opening || 0) + before);
+    const opening = balance;
+    const rows = (await this.repo.statementRows(agent.id, from, to)).map((t) => {
+      balance += (t.credit || 0) - (t.debit || 0);
+      return { ...t, balance };
+    });
+    return {
+      agent: { uid: agent.uid, name: agent.name, phone: agent.phone, note: agent.note, hidden: agent.hidden },
+      opening,
+      rows: rows.reverse(),
+      totals: {
+        expenses: rows.reduce((s, r) => s + (r.credit || 0), 0),
+        paid: rows.reduce((s, r) => s + (r.debit || 0), 0),
+      },
+      closing: balance,
+    };
+  }
+
+  // ───────────────────────────── الحركات ─────────────────────────────
+
+  /** تخليص عربية على حساب المكتب — المبلغ بيزوّد المستحق للمكتب. */
   async addExpense(dto: AddClearanceExpenseDto, userIntId?: number) {
-    const manifest = await this.repo.findManifestByUid(dto.manifestId);
-    if (!manifest) throw new NotFoundException('الكشف مش موجود');
-    // كشف خارج من مكتب شحن مالوش تخليص عندنا — نفس قاعدة كشف السائق.
-    if (manifest.vehicleSource !== 'OURS') {
-      throw new BadRequestException(
-        `كشف رقم ${manifest.no} خروجه من مكتب شحن — مالوش تخليص وجمارك عندنا`,
-      );
-    }
-
-    const agent = await this.requireAgent(dto.agentId);
-    const categoryId = await this.resolveCategory(dto.categoryId);
-
+    const { manifest, agent, categoryId } = await this.expenseParts(dto);
     const tx = await this.repo.createMovement({
-      date: new Date(dto.date),
-      type: CLEARANCE_EXPENSE_TYPE,
-      partyId: agent.id,
-      credit: dto.amount, // إحنا مدينين للمخلّص بالمبلغ ده
-      manifestId: manifest.id,
-      ...(categoryId ? { categoryId } : {}),
-      note: dto.note?.trim() || `جمارك عربية ${manifest.no}`,
+      ...this.expenseRow(dto, manifest, agent.id, categoryId),
       ...(userIntId ? { createdById: userIntId } : {}),
     });
-
-    // أول مصروف جمارك على الكشف بيثبّت المخلّص عليه، عشان الكشف يعرف مخلّصه
-    // من غير ما المستخدم يختاره مرتين.
-    if (!manifest.clearingAgentId) {
-      await this.prisma.manifest.update({
-        where: { id: manifest.id },
-        data: { clearingAgentId: agent.id },
-      });
-    }
+    await this.pinAgentOnManifest(manifest, agent.id);
     return tx;
   }
 
-  /** سداد للمخلّص من خزنة. */
+  /**
+   * تخليص نقدي على عربية — بيتدفع من الخزنة على طول. مصروف على حساب المكتب + دفعة له
+   * بنفس المبلغ في نفس اللحظة، فرصيد المكتب ثابت والعربية بتشيل التكلفة.
+   */
+  async addCashExpense(dto: AddCashClearanceDto, userIntId?: number) {
+    const { manifest, agent, categoryId } = await this.expenseParts(dto);
+    const treasury = await this.requireTreasury(dto.treasuryId);
+    // المبلغ بعملة حساب المكتب؛ الخزنة بتنقص بعملتها.
+    const cashOut = this.fromLedger(dto.amount, agent.currency, treasury.currency, dto.rate);
+    const groupId = crypto.randomUUID();
+    const by = userIntId ? { createdById: userIntId } : {};
+    const [exp] = await this.repo.createMovements([
+      { ...this.expenseRow(dto, manifest, agent.id, categoryId), groupId, ...by },
+      {
+        date: new Date(dto.date), type: CLEARANCE_PAY_TYPE, partyId: agent.id,
+        debit: dto.amount, cashOut, treasuryId: treasury.id,
+        ...(cashOut !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
+        note: `تخليص نقدي كشف ${manifest.no}`,
+        groupId, ...by,
+      },
+    ]);
+    await this.pinAgentOnManifest(manifest, agent.id);
+    return exp;
+  }
+
+  /** دفعة لمكتب التخليص من خزنة جنيه أو دولار. المبلغ بعملة الخزنة. */
   async pay(dto: PayClearanceAgentDto, userIntId?: number) {
     const agent = await this.requireAgent(dto.agentId);
-    const treasury = await this.repo.findTreasuryByUid(dto.treasuryId);
-    if (!treasury) throw new NotFoundException('الخزنة مش موجودة');
-
+    const treasury = await this.requireTreasury(dto.treasuryId);
+    const ledger = this.toLedger(dto.amount, treasury.currency, agent.currency, dto.rate);
     return this.repo.createMovement({
       date: new Date(dto.date),
       type: CLEARANCE_PAY_TYPE,
       partyId: agent.id,
-      debit: dto.amount, // بيقلّل اللي له عندنا
+      debit: ledger, // بيقلّل المستحق للمكتب
       cashOut: dto.amount,
       treasuryId: treasury.id,
-      note: dto.note?.trim() || `سداد للمخلّص ${agent.name}`,
+      ...(ledger !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
+      note: dto.note?.trim() || `دفعة لمكتب التخليص ${agent.name}`,
       ...(userIntId ? { createdById: userIntId } : {}),
     });
   }
 
-  /** حذف حركة تخليص — بالكاسكيد بتاع الحركات عشان أثرها على الخزنة يتشال معاها. */
+  /**
+   * تعديل حركة تخليص. التخليص النقدي (مصروف + دفعة بنفس groupId) بيتعدّل برجليه مع
+   * بعض: نفس التاريخ والمكتب والمبلغ. أي حقل مش مبعوت بيفضل زي ما هو.
+   */
+  async updateMovement(uid: string, dto: UpdateClearanceMovementDto) {
+    const tx = await this.repo.findMovementByUid(uid);
+    if (!tx) throw new NotFoundException('الحركة غير موجودة');
+    this.assertClearanceType(tx.type);
+
+    const legs = tx.groupId ? await this.repo.findGroup(tx.groupId) : [tx];
+    const exp = legs.find((t) => t.type === CLEARANCE_EXPENSE_TYPE);
+    const pay = legs.find((t) => t.type === CLEARANCE_PAY_TYPE);
+
+    const agent = dto.agentId
+      ? await this.requireAgent(dto.agentId)
+      : await this.prisma.party.findUniqueOrThrow({ where: { id: tx.partyId! } });
+    const date = dto.date ? new Date(dto.date) : undefined;
+    const common: Prisma.TransactionUncheckedUpdateInput = {
+      ...(date ? { date } : {}),
+      ...(dto.agentId ? { partyId: agent.id } : {}),
+    };
+
+    const updates: { id: number; data: Prisma.TransactionUncheckedUpdateInput }[] = [];
+    let manifest: Awaited<ReturnType<ClearanceRepository['findManifestByUid']>> = null;
+
+    if (exp) {
+      const data: Prisma.TransactionUncheckedUpdateInput = { ...common };
+      if (dto.manifestId !== undefined) {
+        manifest = await this.requireOurManifest(dto.manifestId);
+        data.manifestId = manifest.id;
+      }
+      if (dto.categoryId !== undefined) data.categoryId = dto.categoryId ? (await this.resolveCategory(dto.categoryId)) ?? null : null;
+      if (dto.amount !== undefined) data.credit = dto.amount;
+      if (dto.note !== undefined) data.note = dto.note.trim() || exp.note;
+      updates.push({ id: exp.id, data });
+    }
+
+    if (pay) {
+      const data: Prisma.TransactionUncheckedUpdateInput = { ...common };
+      const treasury = dto.treasuryId
+        ? await this.requireTreasury(dto.treasuryId)
+        : pay.treasuryId ? await this.prisma.treasuryAccount.findUniqueOrThrow({ where: { id: pay.treasuryId } }) : null;
+      if (!treasury) throw new BadRequestException('اختر الخزنة');
+      const rate = dto.rate ?? (pay.exchangeRate || undefined);
+      if (exp) {
+        // تخليص نقدي: المبلغ بعملة حساب المكتب، والخزنة بتنقص بعملتها.
+        const ledger = dto.amount ?? exp.credit;
+        const cashOut = this.fromLedger(ledger, agent.currency, treasury.currency, rate);
+        Object.assign(data, { debit: ledger, cashOut, treasuryId: treasury.id, exchangeRate: cashOut !== ledger ? rate ?? 0 : 0 });
+      } else {
+        // دفعة: المبلغ بعملة الخزنة.
+        const cash = dto.amount ?? pay.cashOut;
+        const ledger = this.toLedger(cash, treasury.currency, agent.currency, rate);
+        Object.assign(data, { debit: ledger, cashOut: cash, treasuryId: treasury.id, exchangeRate: ledger !== cash ? rate ?? 0 : 0 });
+        if (dto.note !== undefined) data.note = dto.note.trim() || pay.note;
+      }
+      updates.push({ id: pay.id, data });
+    }
+
+    const [first] = await this.repo.updateMovements(updates);
+    if (manifest) await this.pinAgentOnManifest(manifest, agent.id);
+    return first;
+  }
+
+  /** حذف حركة تخليص — بالكاسكيد بتاع الحركات (التخليص النقدي برجليه، وأثره على الخزنة). */
   async remove(uid: string) {
     const tx = await this.repo.findMovementByUid(uid);
-    if (!tx) throw new NotFoundException('الحركة مش موجودة');
-    if (tx.type !== CLEARANCE_EXPENSE_TYPE && tx.type !== CLEARANCE_PAY_TYPE) {
-      throw new BadRequestException('الحركة دي مش من حركات التخليص');
-    }
+    if (!tx) throw new NotFoundException('الحركة غير موجودة');
+    this.assertClearanceType(tx.type);
     await deleteTransactionAndEffects(this.prisma, tx.id);
     return { ok: true };
   }
 
-  private async requireAgent(uid: string) {
-    const agent = await this.repo.findPartyByUid(uid);
-    if (!agent) throw new NotFoundException('المخلّص مش موجود');
-    if (agent.role !== 'CLEARANCE') {
-      throw new BadRequestException(`${agent.name} مش مسجّل كمخلّص جمركي`);
+  // ───────────────────────────── مساعدات ─────────────────────────────
+
+  private async expenseParts(dto: AddClearanceExpenseDto) {
+    const manifest = await this.requireOurManifest(dto.manifestId);
+    const agent = await this.requireAgent(dto.agentId);
+    const categoryId = await this.resolveCategory(dto.categoryId);
+    return { manifest, agent, categoryId };
+  }
+
+  private expenseRow(
+    dto: AddClearanceExpenseDto,
+    manifest: { id: number; no: string; vehicleNo: string | null; trailerNo: string | null },
+    agentId: number,
+    categoryId?: number,
+  ) {
+    const vehicle = [manifest.vehicleNo, manifest.trailerNo].filter(Boolean).join(' / ');
+    return {
+      date: new Date(dto.date),
+      type: CLEARANCE_EXPENSE_TYPE,
+      partyId: agentId,
+      credit: dto.amount, // المبلغ مستحق للمكتب علينا
+      manifestId: manifest.id,
+      ...(categoryId ? { categoryId } : {}),
+      note: dto.note?.trim() || `جمرك وتخليص كشف ${manifest.no}${vehicle ? ` — ${vehicle}` : ''}`,
+    };
+  }
+
+  /** أول تخليص على الكشف بيثبّت المكتب عليه، عشان الكشف يعرف مكتبه. */
+  private async pinAgentOnManifest(manifest: { id: number; clearingAgentId: number | null }, agentId: number) {
+    if (!manifest.clearingAgentId) {
+      await this.prisma.manifest.update({ where: { id: manifest.id }, data: { clearingAgentId: agentId } });
     }
+  }
+
+  /** عربية من عندنا (خروج من المخزن) — مكتب الشحن ليس له تخليص عندنا. */
+  private async requireOurManifest(uid: string) {
+    const manifest = await this.repo.findManifestByUid(uid);
+    if (!manifest) throw new NotFoundException('الكشف غير موجود');
+    if (manifest.vehicleSource !== 'OURS') {
+      throw new BadRequestException(`كشف رقم ${manifest.no} خروجه من مكتب شحن، وليس له تخليص وجمارك عندنا`);
+    }
+    return manifest;
+  }
+
+  // مبلغ بعملة الخزنة → عملة حساب المكتب
+  private toLedger(amount: number, treasuryCur: Currency, agentCur: Currency, rate?: number) {
+    if (treasuryCur === agentCur) return amount;
+    if (!rate) throw new BadRequestException('اكتب سعر صرف الدولار');
+    return treasuryCur === 'USD' ? amount * rate : amount / rate;
+  }
+
+  // مبلغ بعملة حساب المكتب → عملة الخزنة
+  private fromLedger(amount: number, agentCur: Currency, treasuryCur: Currency, rate?: number) {
+    if (treasuryCur === agentCur) return amount;
+    if (!rate) throw new BadRequestException('اكتب سعر صرف الدولار');
+    return treasuryCur === 'USD' ? amount / rate : amount * rate;
+  }
+
+  private assertClearanceType(type: string) {
+    if (type !== CLEARANCE_EXPENSE_TYPE && type !== CLEARANCE_PAY_TYPE) {
+      throw new BadRequestException('هذه الحركة ليست من حركات التخليص');
+    }
+  }
+
+  private async requireTreasury(uid: string) {
+    const t = await this.repo.findTreasuryByUid(uid);
+    if (!t) throw new NotFoundException('الخزنة غير موجودة');
+    return t;
+  }
+
+  /** المكتب المؤرشف مايتسجّلش عليه حركات جديدة — إلا في شاشات الإدارة (allowArchived). */
+  private async requireAgent(uid: string, allowArchived = false) {
+    const agent = await this.repo.findPartyByUid(uid);
+    if (!agent) throw new NotFoundException('مكتب التخليص غير موجود');
+    if (agent.role !== 'CLEARANCE') throw new BadRequestException(`${agent.name} غير مسجل كمكتب تخليص`);
+    if (agent.hidden && !allowArchived) throw new BadRequestException(`المكتب ${agent.name} مؤرشف. استعده أولاً`);
     return agent;
   }
 
   private async resolveCategory(uid?: string) {
     if (!uid) return undefined;
     const c = await this.repo.findCategoryByUid(uid);
-    if (!c) throw new NotFoundException('بند المصروف مش موجود');
+    if (!c) throw new NotFoundException('بند المصروف غير موجود');
     return c.id;
   }
 }
