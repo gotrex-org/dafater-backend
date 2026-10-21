@@ -488,6 +488,7 @@ export class AuditInterceptor implements NestInterceptor {
                 summary: summary ? String(summary) : null,
                 ...(diff ? { diff } : {}),
                 ...(fullSnapshot ? { snapshot: fullSnapshot } : {}),
+                ...(action === 'UPDATE' && !req.user.admin ? { reviewStatus: 'PENDING' } : {}),
               },
             })
             .catch(() => undefined);

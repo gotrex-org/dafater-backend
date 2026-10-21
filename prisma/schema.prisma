@@ -205,6 +205,13 @@ model Party {
   linkedParty   Party?  @relation("PartyLink", fields: [linkedPartyId], references: [id], onDelete: SetNull)
   linkedFrom    Party?  @relation("PartyLink")
 
+  // مكتب تخليص (CLEARANCE) مربوط بمورد: التخليص والدفعات الجديدة تُرحَّل على حساب
+  // المورد مباشرة، والمكتب يبقى اسماً على الحركة (Transaction.clearanceAgentId).
+  clearanceSupplierId Int?
+  clearanceSupplier   Party?        @relation("ClearanceSupplier", fields: [clearanceSupplierId], references: [id], onDelete: SetNull)
+  clearanceOffices    Party[]       @relation("ClearanceSupplier")
+  clearanceMovements  Transaction[] @relation("TxClearanceAgent")
+
   transactions     Transaction[]
   invoices         Invoice[]
   returns          Return[]
@@ -387,6 +394,10 @@ model Transaction {
   party   Party?  @relation(fields: [partyId], references: [id], onDelete: Cascade)
   partyId Int?
 
+  // مكتب التخليص صاحب الحركة. لما المكتب مربوط بمورد، partyId = المورد وهذا = المكتب.
+  clearanceAgent   Party? @relation("TxClearanceAgent", fields: [clearanceAgentId], references: [id], onDelete: SetNull)
+  clearanceAgentId Int?
+
   treasury   TreasuryAccount? @relation("TxTreasury", fields: [treasuryId], references: [id], onDelete: Cascade)
   treasuryId Int?
 
@@ -460,6 +471,7 @@ model Transaction {
   @@index([groupId])
   @@index([manifestId])
   @@index([activity])
+  @@index([clearanceAgentId])
 }
 
 // ----------------------------- invoices -----------------------------
@@ -1007,9 +1019,15 @@ model AuditLog {
   summary   String?  // friendly label (e.g. invoice no / party name)
   diff      Json?    // per-field { from, to } map — UPDATE only
   snapshot  Json?    // full entity state captured before DELETE (used for undo)
+  // مراجعة المدير لتعديلات باقي المستخدمين: PENDING | APPROVED | REJECTED.
+  // null = لا يحتاج مراجعة (إضافة/حذف، أو تعديل من المدير، أو سجل قديم).
+  reviewStatus String?
+  reviewedBy   String?
+  reviewedAt   DateTime?
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+  @@index([reviewStatus])
 }
 
 // ------------------------------ borrowed goods (العارية) ------------------------------

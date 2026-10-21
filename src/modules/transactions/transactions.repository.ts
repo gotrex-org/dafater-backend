@@ -107,6 +107,8 @@ export class TransactionsRepository {
       } else {
         data.partyId = null;
       }
+      // نقل الحركة لطرف آخر يخرجها من مكتب التخليص صاحبها، وإلا حُسبت مرتين.
+      if (data.partyId !== txn.partyId) data.clearanceAgentId = null;
     }
 
     if (dto.treasuryId !== undefined) {

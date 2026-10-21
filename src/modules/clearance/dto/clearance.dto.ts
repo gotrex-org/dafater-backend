@@ -39,12 +39,14 @@ export class ClearanceAgentDto {
   @IsString() @MinLength(1) name: string;
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() supplierId?: string; // uid مورد تُرحَّل عليه حركات المكتب
 }
 
 export class UpdateClearanceAgentDto {
   @IsOptional() @IsString() @MinLength(1) name?: string;
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() note?: string;
+  @IsOptional() @IsString() supplierId?: string; // سلسلة فاضية = فك الربط
 }
 
 /**

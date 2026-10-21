@@ -471,6 +471,7 @@ export class TransactionsService {
           entityUid,
           summary,
           ...(diff && Object.keys(diff).length ? { diff } : {}),
+          ...(action === 'UPDATE' && !user.admin ? { reviewStatus: 'PENDING' } : {}),
         },
       })
       .catch(() => undefined);

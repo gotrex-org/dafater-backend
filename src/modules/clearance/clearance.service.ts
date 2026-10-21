@@ -15,7 +15,10 @@ export class ClearanceService {
     private prisma: PrismaService,
   ) {}
 
-  agents(includeArchived = false) { return this.repo.listAgents(includeArchived); }
+  async agents(includeArchived = false) {
+    const agents = await this.repo.listAgents(includeArchived);
+    return agents.map(({ clearanceSupplier, ...a }) => ({ ...a, supplier: clearanceSupplier }));
+  }
 
   // ───────────────────────────── المكاتب ─────────────────────────────
 
@@ -24,7 +27,10 @@ export class ClearanceService {
     const name = dto.name.trim();
     const dup = await this.prisma.party.findFirst({ where: { name, role: 'CLEARANCE' } });
     if (dup) throw new ConflictException(dup.hidden ? 'يوجد مكتب مؤرشف بنفس الاسم. يمكن استعادته من المكاتب المؤرشفة' : 'يوجد مكتب تخليص بنفس الاسم');
-    return this.repo.createAgent({ name, phone: dto.phone?.trim() || null, note: dto.note?.trim() || null });
+    return this.repo.createAgent({
+      name, phone: dto.phone?.trim() || null, note: dto.note?.trim() || null,
+      clearanceSupplierId: await this.resolveSupplier(dto.supplierId, 'EGP'),
+    });
   }
 
   async updateAgent(uid: string, dto: UpdateClearanceAgentDto) {
@@ -37,6 +43,7 @@ export class ClearanceService {
       ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
       ...(dto.phone !== undefined ? { phone: dto.phone.trim() || null } : {}),
       ...(dto.note !== undefined ? { note: dto.note.trim() || null } : {}),
+      ...(dto.supplierId !== undefined ? { clearanceSupplierId: await this.resolveSupplier(dto.supplierId, agent.currency) } : {}),
     });
   }
 
@@ -78,11 +85,12 @@ export class ClearanceService {
     // إجماليات الفترة لكل مكتب: اللي اترحّل له واللي اتدفع له
     const totals = new Map<number, { expenses: number; paid: number }>();
     for (const m of movements) {
-      if (!m.partyId) continue;
-      const t = totals.get(m.partyId) ?? { expenses: 0, paid: 0 };
+      const id = m.clearanceAgentId ?? m.partyId;
+      if (!id) continue;
+      const t = totals.get(id) ?? { expenses: 0, paid: 0 };
       if (m.type === CLEARANCE_EXPENSE_TYPE) t.expenses += m.credit;
       else t.paid += m.debit;
-      totals.set(m.partyId, t);
+      totals.set(id, t);
     }
 
     return {
@@ -93,6 +101,7 @@ export class ClearanceService {
         phone: a.phone,
         note: a.note,
         hidden: a.hidden,
+        supplier: a.clearanceSupplier,
         expenses: totals.get(a.id)?.expenses ?? 0,
         paid: totals.get(a.id)?.paid ?? 0,
         due: -((a.opening || 0) + (net.get(a.id) ?? 0)),
@@ -106,6 +115,9 @@ export class ClearanceService {
    */
   async statement(uid: string, q: ClearanceQueryDto) {
     const agent = await this.requireAgent(uid, true);
+    const supplier = agent.clearanceSupplierId
+      ? await this.prisma.party.findUnique({ where: { id: agent.clearanceSupplierId }, select: { uid: true, name: true } })
+      : null;
     const from = q.from ? new Date(q.from) : undefined;
     const to = q.to ? new Date(q.to) : undefined;
     const before = from ? await this.repo.netBefore(agent.id, from) : 0;
@@ -116,7 +128,7 @@ export class ClearanceService {
       return { ...t, balance };
     });
     return {
-      agent: { uid: agent.uid, name: agent.name, phone: agent.phone, note: agent.note, hidden: agent.hidden },
+      agent: { uid: agent.uid, name: agent.name, phone: agent.phone, note: agent.note, hidden: agent.hidden, supplier },
       opening,
       rows: rows.reverse(),
       totals: {
@@ -129,11 +141,14 @@ export class ClearanceService {
 
   // ───────────────────────────── الحركات ─────────────────────────────
 
-  /** تخليص عربية على حساب المكتب — المبلغ بيزوّد المستحق للمكتب. */
+  /**
+   * تخليص عربية على حساب المكتب — المبلغ بيزوّد المستحق للمكتب. لو المكتب مربوط
+   * بمورد، الحركة بتترحّل على حساب المورد.
+   */
   async addExpense(dto: AddClearanceExpenseDto, userIntId?: number) {
-    const { manifest, agent, categoryId } = await this.expenseParts(dto);
+    const { manifest, agent, ledger, categoryId } = await this.expenseParts(dto);
     const tx = await this.repo.createMovement({
-      ...this.expenseRow(dto, manifest, agent.id, categoryId),
+      ...this.expenseRow(dto, manifest, agent, ledger, categoryId),
       ...(userIntId ? { createdById: userIntId } : {}),
     });
     await this.pinAgentOnManifest(manifest, agent.id);
@@ -145,19 +160,19 @@ export class ClearanceService {
    * بنفس المبلغ في نفس اللحظة، فرصيد المكتب ثابت والعربية بتشيل التكلفة.
    */
   async addCashExpense(dto: AddCashClearanceDto, userIntId?: number) {
-    const { manifest, agent, categoryId } = await this.expenseParts(dto);
+    const { manifest, agent, ledger, categoryId } = await this.expenseParts(dto);
     const treasury = await this.requireTreasury(dto.treasuryId);
-    // المبلغ بعملة حساب المكتب؛ الخزنة بتنقص بعملتها.
-    const cashOut = this.fromLedger(dto.amount, agent.currency, treasury.currency, dto.rate);
+    // المبلغ بعملة الحساب المرحّل عليه؛ الخزنة بتنقص بعملتها.
+    const cashOut = this.fromLedger(dto.amount, ledger.currency, treasury.currency, dto.rate);
     const groupId = crypto.randomUUID();
     const by = userIntId ? { createdById: userIntId } : {};
     const [exp] = await this.repo.createMovements([
-      { ...this.expenseRow(dto, manifest, agent.id, categoryId), groupId, ...by },
+      { ...this.expenseRow(dto, manifest, agent, ledger, categoryId), groupId, ...by },
       {
-        date: new Date(dto.date), type: CLEARANCE_PAY_TYPE, partyId: agent.id,
+        date: new Date(dto.date), type: CLEARANCE_PAY_TYPE, partyId: ledger.id, clearanceAgentId: agent.id,
         debit: dto.amount, cashOut, treasuryId: treasury.id,
         ...(cashOut !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
-        note: `تخليص نقدي كشف ${manifest.no}`,
+        note: `تخليص نقدي كشف ${manifest.no}${this.viaAgent(agent, ledger)}`,
         groupId, ...by,
       },
     ]);
@@ -165,20 +180,25 @@ export class ClearanceService {
     return exp;
   }
 
-  /** دفعة لمكتب التخليص من خزنة جنيه أو دولار. المبلغ بعملة الخزنة. */
+  /**
+   * دفعة لمكتب التخليص من خزنة جنيه أو دولار. المبلغ بعملة الخزنة. لو المكتب مربوط
+   * بمورد، الدفعة بتنزل من حساب المورد.
+   */
   async pay(dto: PayClearanceAgentDto, userIntId?: number) {
     const agent = await this.requireAgent(dto.agentId);
+    const ledgerParty = await this.ledgerOf(agent);
     const treasury = await this.requireTreasury(dto.treasuryId);
-    const ledger = this.toLedger(dto.amount, treasury.currency, agent.currency, dto.rate);
+    const ledger = this.toLedger(dto.amount, treasury.currency, ledgerParty.currency, dto.rate);
     return this.repo.createMovement({
       date: new Date(dto.date),
       type: CLEARANCE_PAY_TYPE,
-      partyId: agent.id,
+      partyId: ledgerParty.id,
+      clearanceAgentId: agent.id,
       debit: ledger, // بيقلّل المستحق للمكتب
       cashOut: dto.amount,
       treasuryId: treasury.id,
       ...(ledger !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
-      note: dto.note?.trim() || `دفعة لمكتب التخليص ${agent.name}`,
+      note: dto.note?.trim() || `دفعة لمكتب التخليص ${agent.name}${ledgerParty.id !== agent.id ? ` (حساب المورد ${ledgerParty.name})` : ''}`,
       ...(userIntId ? { createdById: userIntId } : {}),
     });
   }
@@ -196,13 +216,20 @@ export class ClearanceService {
     const exp = legs.find((t) => t.type === CLEARANCE_EXPENSE_TYPE);
     const pay = legs.find((t) => t.type === CLEARANCE_PAY_TYPE);
 
-    const agent = dto.agentId
-      ? await this.requireAgent(dto.agentId)
+    // تغيير المكتب بيرحّل الحركة على حسابه الحالي (المكتب أو المورد المربوط به).
+    // من غير تغيير، الحركة بتفضل على الحساب اللي اترحّلت عليه.
+    const currentAgentId = tx.clearanceAgentId ?? tx.partyId!;
+    const picked = dto.agentId ? await this.requireAgent(dto.agentId, true) : null;
+    const newAgent = picked && picked.id !== currentAgentId ? picked : null;
+    if (newAgent?.hidden) throw new BadRequestException(`المكتب ${newAgent.name} مؤرشف. استعده أولاً`);
+    const ledgerParty = newAgent
+      ? await this.ledgerOf(newAgent)
       : await this.prisma.party.findUniqueOrThrow({ where: { id: tx.partyId! } });
+    const agentId = newAgent?.id ?? currentAgentId;
     const date = dto.date ? new Date(dto.date) : undefined;
     const common: Prisma.TransactionUncheckedUpdateInput = {
       ...(date ? { date } : {}),
-      ...(dto.agentId ? { partyId: agent.id } : {}),
+      ...(newAgent ? { partyId: ledgerParty.id, clearanceAgentId: newAgent.id } : {}),
     };
 
     const updates: { id: number; data: Prisma.TransactionUncheckedUpdateInput }[] = [];
@@ -230,12 +257,12 @@ export class ClearanceService {
       if (exp) {
         // تخليص نقدي: المبلغ بعملة حساب المكتب، والخزنة بتنقص بعملتها.
         const ledger = dto.amount ?? exp.credit;
-        const cashOut = this.fromLedger(ledger, agent.currency, treasury.currency, rate);
+        const cashOut = this.fromLedger(ledger, ledgerParty.currency, treasury.currency, rate);
         Object.assign(data, { debit: ledger, cashOut, treasuryId: treasury.id, exchangeRate: cashOut !== ledger ? rate ?? 0 : 0 });
       } else {
         // دفعة: المبلغ بعملة الخزنة.
         const cash = dto.amount ?? pay.cashOut;
-        const ledger = this.toLedger(cash, treasury.currency, agent.currency, rate);
+        const ledger = this.toLedger(cash, treasury.currency, ledgerParty.currency, rate);
         Object.assign(data, { debit: ledger, cashOut: cash, treasuryId: treasury.id, exchangeRate: ledger !== cash ? rate ?? 0 : 0 });
         if (dto.note !== undefined) data.note = dto.note.trim() || pay.note;
       }
@@ -243,7 +270,7 @@ export class ClearanceService {
     }
 
     const [first] = await this.repo.updateMovements(updates);
-    if (manifest) await this.pinAgentOnManifest(manifest, agent.id);
+    if (manifest) await this.pinAgentOnManifest(manifest, agentId);
     return first;
   }
 
@@ -261,26 +288,56 @@ export class ClearanceService {
   private async expenseParts(dto: AddClearanceExpenseDto) {
     const manifest = await this.requireOurManifest(dto.manifestId);
     const agent = await this.requireAgent(dto.agentId);
+    const ledger = await this.ledgerOf(agent);
     const categoryId = await this.resolveCategory(dto.categoryId);
-    return { manifest, agent, categoryId };
+    return { manifest, agent, ledger, categoryId };
   }
 
   private expenseRow(
     dto: AddClearanceExpenseDto,
     manifest: { id: number; no: string; vehicleNo: string | null; trailerNo: string | null },
-    agentId: number,
+    agent: { id: number; name: string },
+    ledger: { id: number },
     categoryId?: number,
   ) {
     const vehicle = [manifest.vehicleNo, manifest.trailerNo].filter(Boolean).join(' / ');
+    const note = dto.note?.trim() || `جمرك وتخليص كشف ${manifest.no}${vehicle ? ` — ${vehicle}` : ''}`;
     return {
       date: new Date(dto.date),
       type: CLEARANCE_EXPENSE_TYPE,
-      partyId: agentId,
-      credit: dto.amount, // المبلغ مستحق للمكتب علينا
+      partyId: ledger.id,
+      clearanceAgentId: agent.id,
+      credit: dto.amount, // المبلغ مستحق للمكتب (أو للمورد المربوط به) علينا
       manifestId: manifest.id,
       ...(categoryId ? { categoryId } : {}),
-      note: dto.note?.trim() || `جمرك وتخليص كشف ${manifest.no}${vehicle ? ` — ${vehicle}` : ''}`,
+      note: `${note}${this.viaAgent(agent, ledger)}`,
     };
+  }
+
+  /** الحساب اللي بتترحّل عليه حركات المكتب: المورد المربوط به، وإلا المكتب نفسه. */
+  private async ledgerOf<T extends { clearanceSupplierId: number | null }>(agent: T) {
+    if (!agent.clearanceSupplierId) return agent;
+    return this.prisma.party.findUniqueOrThrow({ where: { id: agent.clearanceSupplierId } });
+  }
+
+  /** اسم المكتب في بيان الحركة لما تترحّل على حساب المورد، عشان يظهر في كشفه. */
+  private viaAgent(agent: { id: number; name: string }, ledger: { id: number }) {
+    return ledger.id !== agent.id ? ` — مكتب ${agent.name}` : '';
+  }
+
+  /**
+   * المورد المربوط بالمكتب. سلسلة فاضية = فك الربط. لازم يكون بنفس عملة المكتب، لأن
+   * مبالغ التخليص بتتكتب بعملة المكتب وبتترحّل على المورد كما هي.
+   */
+  private async resolveSupplier(uid: string | undefined, officeCurrency: Currency) {
+    if (!uid) return null;
+    const supplier = await this.repo.findPartyByUid(uid);
+    if (!supplier) throw new NotFoundException('المورد غير موجود');
+    if (supplier.role !== 'SUPPLIER') throw new BadRequestException(`${supplier.name} غير مسجل كمورد`);
+    if (supplier.currency !== officeCurrency) {
+      throw new BadRequestException(`عملة حساب المورد  تختلف عن عملة المكتب. لا يمكن الربط`);
+    }
+    return supplier.id;
   }
 
   /** أول تخليص على الكشف بيثبّت المكتب عليه، عشان الكشف يعرف مكتبه. */

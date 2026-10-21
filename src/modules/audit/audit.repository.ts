@@ -25,9 +25,13 @@ export class AuditRepository {
     return where;
   }
 
-  findAll(q: PaginationQueryDto, user?: string) {
+  findAll(q: PaginationQueryDto, user?: string, action?: string, review?: string) {
+    const base: any = user ? { userName: user } : {};
+    // Unknown values are ignored rather than matching nothing.
+    if (action && ['CREATE', 'UPDATE', 'DELETE'].includes(action)) base.action = action;
+    if (review && ['PENDING', 'APPROVED', 'REJECTED'].includes(review)) base.reviewStatus = review;
     return paginate(this.prisma.auditLog, q, {
-      where: this.buildWhere(q, user ? { userName: user } : {}),
+      where: this.buildWhere(q, base),
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -42,6 +46,13 @@ export class AuditRepository {
 
   findOneByUid(uid: string) {
     return this.prisma.auditLog.findUniqueOrThrow({ where: { uid } });
+  }
+
+  markReviewed(uid: string, status: 'APPROVED' | 'REJECTED', reviewedBy: string) {
+    return this.prisma.auditLog.update({
+      where: { uid },
+      data: { reviewStatus: status, reviewedBy, reviewedAt: new Date() },
+    });
   }
 
   deleteByUid(uid: string) {

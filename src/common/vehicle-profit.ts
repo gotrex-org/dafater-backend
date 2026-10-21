@@ -45,6 +45,7 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
           debit: true, credit: true, cashIn: true, cashOut: true, expAmt: true,
           category: { select: { name: true, vehicleLink: true } },
           party: { select: { uid: true, name: true } },
+          clearanceAgent: { select: { uid: true, name: true } },
           treasury: { select: { name: true } },
         },
         orderBy: [{ date: 'asc' }, { id: 'asc' }],
@@ -80,7 +81,7 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
 
     const customsLines = m.transactions
       .filter((t) => t.type === 'جمارك')
-      .map((t) => ({ id: t.uid, date: t.date, amount: t.credit || 0, office: t.party, note: t.note }));
+      .map((t) => ({ id: t.uid, date: t.date, amount: t.credit || 0, office: t.clearanceAgent ?? t.party, note: t.note }));
 
     const amountOf = (t: { cashOut: number; cashIn: number; debit: number; expAmt: number }) =>
       (t.cashOut || 0) - (t.cashIn || 0) || t.expAmt || t.debit || 0;

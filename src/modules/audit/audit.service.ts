@@ -3,6 +3,20 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { AuditRepository } from './audit.repository';
 
+// الأقسام التي يُرجَع فيها التعديل المرفوض تلقائياً: حقول بسيطة بدون قيود مالية أو
+// أسطر تابعة. الحقول نفسها التي يلتقطها BEFORE_FETCH في الـ interceptor.
+const REVERTIBLE: Record<string, { model: string; fields: string[] }> = {
+  parties:              { model: 'party',           fields: ['name', 'phone'] },
+  manifests:            { model: 'manifest',        fields: ['clientName', 'driverName', 'vehicleNo', 'trailerNo', 'note'] },
+  products:             { model: 'product',         fields: ['name', 'unit'] },
+  'driver-trips':       { model: 'driverTrip',      fields: ['driverName', 'agreedFreight', 'note'] },
+  treasury:             { model: 'treasuryAccount', fields: ['name', 'opening'] },
+  warehouses:           { model: 'warehouse',       fields: ['name'] },
+  'expense-categories': { model: 'expenseCategory', fields: ['name'] },
+  drivers:              { model: 'driver',          fields: ['name', 'phone', 'phone2', 'vehicleNo', 'trailerNo', 'note'] },
+  orders:               { model: 'order',           fields: ['name', 'phone', 'note'] },
+};
+
 @Injectable()
 export class AuditService {
   constructor(
@@ -10,8 +24,50 @@ export class AuditService {
     private prisma: PrismaService,
   ) {}
 
-  findAll(q: PaginationQueryDto, user?: string) {
-    return this.repo.findAll(q, user);
+  findAll(q: PaginationQueryDto, user?: string, action?: string, review?: string) {
+    return this.repo.findAll(q, user, action, review);
+  }
+
+  // موافقة المدير على تعديل أو رفضه. الرفض يُرجع القيم القديمة تلقائياً في الأقسام
+  // ذات الحقول البسيطة (REVERTIBLE). الفواتير والحركات المالية وما يشبهها تُعيد بناء
+  // أسطرها وقيودها عند التعديل، فإرجاع القيم مباشرة في الداتابيز يكسر الأرصدة —
+  // فيها يُسجَّل الرفض فقط، ويصحّح المدير العنصر من شاشته.
+  async review(auditUid: string, status: 'APPROVED' | 'REJECTED', reviewedBy: string) {
+    const log = await this.repo.findOneByUid(auditUid);
+    if (log.action !== 'UPDATE' || log.reviewStatus !== 'PENDING') {
+      throw new BadRequestException('هذا التعديل لا يحتاج مراجعة، أو تمت مراجعته بالفعل');
+    }
+
+    let reverted = false;
+    if (status === 'REJECTED' && REVERTIBLE[log.entity] && log.entityUid && log.diff) {
+      await this.revertUpdate(log.entity, log.entityUid, log.diff as Record<string, { from: any; to: any }>);
+      reverted = true;
+    }
+
+    await this.repo.markReviewed(auditUid, status, reviewedBy);
+    return { ok: true, reverted };
+  }
+
+  private async revertUpdate(entity: string, uid: string, diff: Record<string, { from: any; to: any }>) {
+    const { model, fields } = REVERTIBLE[entity];
+    const delegate = (this.prisma as any)[model];
+    const keys = Object.keys(diff).filter((k) => fields.includes(k));
+    if (!keys.length) return;
+
+    const current = await delegate.findUnique({ where: { uid }, select: Object.fromEntries(keys.map((k) => [k, true])) });
+    if (!current) throw new BadRequestException('العنصر غير موجود. ربما تم حذفه بعد التعديل');
+
+    // لو اتعدّل الحقل مرة تانية بعد التعديل المرفوض، الإرجاع هيمسح التعديل الأحدث —
+    // فنوقف ونطلب التصحيح يدوياً.
+    const changedSince = keys.some((k) => (current[k] ?? null) !== (diff[k].to ?? null));
+    if (changedSince) {
+      throw new BadRequestException('تم تعديل هذا العنصر مرة أخرى بعد هذا التعديل. صحّحه يدوياً من شاشته');
+    }
+
+    await delegate.update({
+      where: { uid },
+      data: Object.fromEntries(keys.map((k) => [k, diff[k].from])),
+    });
   }
 
   findTrash(q: PaginationQueryDto) {
