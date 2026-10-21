@@ -146,34 +146,49 @@ export class PartiesService {
   //  • البيانات الداخلية (اسم/دور الطرف المرتبط، بيانات العربيات) مابتخرجش أصلاً من هنا.
   async clientLedger(id: string, from?: string, to?: string) {
     const { opening, balance, rows } = await this.ledger(id, from, to);
-    return {
-      opening,
-      balance,
-      rows: rows.map((r) => {
-        const isReceipt = (r.credit || 0) > 0;
-        // "محصّل مع فاتورة" مرتبط بفاتورة بس هو استلام نقدية — يتعامل كتحصيل مش كمستند.
-        const isDoc = !!(r.invoiceUid || r.dealUid) && !isReceipt;
-        return {
-          id: r.id,
-          date: r.date,
-          type: isDoc ? 'فاتورة' : isReceipt ? 'استلام نقدية' : r.type,
-          note: isDoc
-            ? `فاتورة ${r.docNo}${r.clientNote ? ` — ${r.clientNote}` : ''}`
-            : isReceipt
-            ? (r.clientNote || 'استلام نقدية')
-            : (r.clientNote || r.note || '—'),
-          debit: r.debit,
-          credit: r.credit,
-          balance: r.balance,
-          docNo: isDoc ? r.docNo : null,
-          invoiceUid: isDoc ? r.invoiceUid : null,
-          dealUid: isDoc ? r.dealUid : null,
-          invoiceItems: isDoc ? r.invoiceItems : null,
-          invoiceCharges: isDoc ? r.invoiceCharges : null,
-          shipped: isDoc ? r.shipped : false,
-        };
-      }),
-    };
+    const mapped = rows.map((r) => {
+      const isReceipt = (r.credit || 0) > 0;
+      // "محصّل مع فاتورة" مرتبط بفاتورة بس هو استلام نقدية — يتعامل كتحصيل مش كمستند.
+      const isDoc = !!(r.invoiceUid || r.dealUid) && !isReceipt;
+      return {
+        id: r.id,
+        date: r.date,
+        type: isDoc ? 'فاتورة' : isReceipt ? 'استلام نقدية' : r.type,
+        note: isDoc
+          ? `فاتورة ${r.docNo}${r.clientNote ? ` — ${r.clientNote}` : ''}`
+          : isReceipt
+          ? (r.clientNote || 'استلام نقدية')
+          : (r.clientNote || r.note || '—'),
+        debit: r.debit,
+        credit: r.credit,
+        balance: r.balance,
+        docNo: isDoc ? r.docNo : null,
+        invoiceUid: isDoc ? r.invoiceUid : null,
+        dealUid: isDoc ? r.dealUid : null,
+        invoiceItems: isDoc ? r.invoiceItems : null,
+        invoiceCharges: isDoc ? r.invoiceCharges : null,
+        shipped: isDoc ? r.shipped : false,
+      };
+    });
+
+    // الفاتورة اللي عليها بنود شحن بتتسجّل حركتين (رجل الأصناف ورجل الشحن) على نفس
+    // الفاتورة. العميل يشوفها سطر واحد بمبلغها كله. الصفوف من الأحدث للأقدم، فأول ظهور
+    // هو آخر رجل، ورصيده هو الرصيد بعد الفاتورة كلها.
+    const merged: typeof mapped = [];
+    const byDoc = new Map<string, (typeof mapped)[number]>();
+    for (const r of mapped) {
+      const key = r.invoiceUid ? `inv:${r.invoiceUid}` : r.dealUid ? `deal:${r.dealUid}` : null;
+      const first = key ? byDoc.get(key) : undefined;
+      if (first) {
+        first.debit = (first.debit || 0) + (r.debit || 0);
+        first.credit = (first.credit || 0) + (r.credit || 0);
+        continue;
+      }
+      if (key) byDoc.set(key, r);
+      merged.push(r);
+    }
+
+    return { opening, balance, rows: merged };
   }
 
   async linkParty(id: string, dto: LinkPartyDto) {
