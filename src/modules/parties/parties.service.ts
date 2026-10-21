@@ -113,6 +113,12 @@ export class PartiesService {
         manifestDate: t.invoice?.manifests?.[0]?.date ?? null,
         manifestNo: t.invoice?.manifests?.[0]?.no ?? null,
         manifestArrived: t.invoice?.manifests?.[0]?.driverTrips?.some((dt: any) => dt.arrivalDate != null) ?? false,
+        // بنود الشحن على الفاتورة (نولون/تحميل…) — وجود بند ناولون معناه إن البضاعة
+        // اتشحنت من عندنا مش من شركة شحن، والبورتال بيميّز اليوم ده.
+        invoiceCharges: t.invoice
+          ? (t.invoice as any).charges.map((c: any) => ({ name: c.chargeType?.name ?? '', amount: (c.qty ?? 1) * c.price }))
+          : null,
+        shipped: !!t.invoice && (t.invoice as any).charges.some((c: any) => /نا?ولون/.test(c.chargeType?.name ?? '')),
         invoiceItems: t.invoice
           ? t.invoice.items.map((it: any) => ({ name: it.product?.name ?? '', qty: it.qty, price: it.price }))
           : t.deal
@@ -163,6 +169,8 @@ export class PartiesService {
           invoiceUid: isDoc ? r.invoiceUid : null,
           dealUid: isDoc ? r.dealUid : null,
           invoiceItems: isDoc ? r.invoiceItems : null,
+          invoiceCharges: isDoc ? r.invoiceCharges : null,
+          shipped: isDoc ? r.shipped : false,
         };
       }),
     };

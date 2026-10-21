@@ -61,6 +61,7 @@ export class PartiesRepository {
               take: 1,
             },
             items: { select: { qty: true, price: true, product: { select: { name: true } } } },
+            charges: { select: { qty: true, price: true, chargeType: { select: { name: true } } } },
           },
         },
         deal: { select: { uid: true, items: { select: { qty: true, price: true, buyPrice: true, product: { select: { name: true } } } } } },
