@@ -1,10 +1,13 @@
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
+/** نوع حركة الناولون الداخلي على سطر الفاتورة (يُدفع نقداً من خزنة). */
+export const FREIGHT_TX_TYPE = 'ناولون';
+
 /**
  * ربح العربية — قسم «تكاليف الشحن» في كشف العربية، وتقرير ربح كل عربية.
  *
- *   ربح العربية = بنود الشحن على العملاء − (الإيجار + الجمرك والتخليص + التحميل + الشفتنة)
+ *   ربح العربية = بنود الشحن على العملاء − (الإيجار + الجمرك والتخليص + التحميل + الشفتنة + الناولون)
  *
  *  - بنود الشحن: سطور InvoiceCharge المربوطة بالعربية صراحةً، + البنود غير المربوطة على
  *    فاتورة العربية لو الفاتورة عليها عربية واحدة بس (الحالة الغالبة). لو الفاتورة عليها
@@ -13,6 +16,8 @@ import { PrismaService } from '../prisma/prisma.service';
  *  - الجمرك والتخليص: حركات «جمارك» على العربية (مترحّلة على حساب مكتب التخليص).
  *  - التحميل والشفتنة: مصروفات مربوطة بالعربية على بند `vehicleLink`. أي مصروف تاني
  *    مربوط بالعربية بيرجع في `otherExpenses` للعرض بس، ومش داخل في الربح.
+ *  - الناولون: حركات «ناولون» المتسجلة على فاتورة البيع المربوطة بالعربية — بتتخصم
+ *    تلقائي أول ما الفاتورة تتربط. لو الفاتورة عليها أكتر من عربية، بيتقسم بالتساوي.
  */
 export async function computeVehicleProfits(prisma: PrismaService, where: Prisma.ManifestWhereInput) {
   const manifests = await prisma.manifest.findMany({
@@ -25,6 +30,11 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
         select: {
           id: true, uid: true, no: true, kind: true, currency: true,
           _count: { select: { manifests: true } },
+          transactions: {
+            where: { type: FREIGHT_TX_TYPE },
+            select: { uid: true, date: true, cashOut: true, cashIn: true, note: true, treasury: { select: { name: true } } },
+            orderBy: [{ date: 'asc' }, { id: 'asc' }],
+          },
           charges: {
             where: { manifestId: null },
             select: { uid: true, qty: true, price: true, note: true, chargeType: { select: { name: true } } },
@@ -93,6 +103,15 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
     const vehicleExpenses = expenseRows.filter((t) => t.category?.vehicleLink).map(toLine);
     const otherExpenses = expenseRows.filter((t) => !t.category?.vehicleLink).map(toLine);
 
+    // ناولون فاتورة البيع — نصيب العربية منه. فاتورة الشراء ناولونها على تكلفة البضاعة.
+    const share = m.invoice ? 1 / Math.max(1, m.invoice._count.manifests) : 0;
+    const freightLines = m.invoice?.kind === 'SALE'
+      ? m.invoice.transactions.map((t) => ({
+          id: t.uid, date: t.date, amount: ((t.cashOut || 0) - (t.cashIn || 0)) * share,
+          note: t.note, treasury: t.treasury?.name ?? null, invoiceNo: m.invoice!.no,
+        }))
+      : [];
+
     const sum = (xs: { amount: number }[]) => xs.reduce((s, x) => s + x.amount, 0);
     // التحميل والشفتنة وأي بند مربوط بعربية — مجمّعين بالاسم.
     const byCategory = new Map<string, number>();
@@ -105,7 +124,8 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
     const rent = sum(rentLines);
     const customs = sum(customsLines);
     const vehicleCosts = sum(vehicleExpenses);
-    const costs = rent + customs + vehicleCosts;
+    const freight = sum(freightLines);
+    const costs = rent + customs + vehicleCosts + freight;
 
     return {
       id: m.uid,
@@ -123,6 +143,7 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
       unassignedCharges: unassigned,
       rent: { total: rent, lines: rentLines },
       customs: { total: customs, lines: customsLines },
+      freight: { total: freight, lines: freightLines, shared: share < 1 },
       vehicleExpenses: {
         total: vehicleCosts,
         lines: vehicleExpenses,

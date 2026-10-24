@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Activity, InvoiceKind } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BalancesService } from '../balances/balances.service';
-import { computeVehicleProfits } from '../../common/vehicle-profit';
+import { computeVehicleProfits, FREIGHT_TX_TYPE } from '../../common/vehicle-profit';
 
 // حركات المصاريف اللي بتتوزّع على النشاطين في تقريري التجارة والشحن.
 const EXPENSE_TYPES = ['مصروف', 'مصروف مخزن'];
@@ -138,7 +138,7 @@ export class ReportsService {
    * تقرير الشحن: إيرادات البنود، تكاليف العربيات، مصاريف المخزن، وربح الشحن.
    *   الإيراد = بنود الشحن على فواتير البيع (+ الأصناف الخدمية القديمة) + العطلة وفرق الوزن على العملاء
    *   تكاليف العربيات = الإيجار + الجمرك والتخليص + التحميل والشفتنة + عطلة وفرق وزن وشاي السائقين
-   *                     + بنود الشحن على فواتير الشراء
+   *                     + بنود الشحن على فواتير الشراء + ناولون فواتير البيع المربوطة بعربية
    *   مصاريف المخزن = مصاريف بنشاط الشحن (غير التحميل والشفتنة) + نصيب الشحن من المرتبات
    */
   async shippingSummary(from?: string, to?: string) {
@@ -171,6 +171,12 @@ export class ReportsService {
     const truckWeightDiff = await sumType(['truckWeightDiff'], 'debit');
     const customs = await sumType(['جمارك'], 'credit');
     const driverExtras = await sumType(['driverDelay', 'driverWeightDiff', 'driverTea'], 'cashOut');
+    // ناولون فواتير البيع المربوطة بعربية — تكلفة شحن على العربية (نفس ربح كل عربية).
+    const freightAgg = await this.prisma.transaction.aggregate({
+      where: { type: FREIGHT_TX_TYPE, invoice: { kind: InvoiceKind.SALE, fake: false, manifests: { some: {} } }, ...dateWhere },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    const invoiceFreight = (freightAgg._sum.cashOut || 0) - (freightAgg._sum.cashIn || 0);
 
     const trips = await this.prisma.driverTrip.aggregate({
       where: date ? { departureDate: date } : {},
@@ -211,10 +217,11 @@ export class ReportsService {
       loading: vehicleExpenses, // التحميل والشفتنة (وأي بند مربوط بعربية)
       loadingTotal: total(vehicleExpenses),
       driverExtras,              // عطلة وفرق وزن وشاي السائقين
+      invoiceFreight,            // ناولون فواتير البيع المربوطة بعربية
       purchaseCharges,           // بنود شحن على فواتير الشراء
       purchaseChargesTotal: total(purchaseCharges),
     };
-    const vehicleCostsTotal = rent + customs + vehicleCosts.loadingTotal + driverExtras + vehicleCosts.purchaseChargesTotal;
+    const vehicleCostsTotal = rent + customs + vehicleCosts.loadingTotal + driverExtras + invoiceFreight + vehicleCosts.purchaseChargesTotal;
 
     const warehouseExpenses = list(warehouseBy);
     const warehouseTotal = total(warehouseExpenses);
@@ -240,14 +247,15 @@ export class ReportsService {
       rent: r.rent.total,
       customs: r.customs.total,
       loading: r.vehicleExpenses.total,
+      freight: r.freight.total,
       costs: r.costs,
       profit: r.profit,
       unassigned: r.unassignedCharges.reduce((s, c) => s + c.total, 0),
     }));
-    const sum = (k: 'revenue' | 'rent' | 'customs' | 'loading' | 'costs' | 'profit') => vehicles.reduce((s, v) => s + v[k], 0);
+    const sum = (k: 'revenue' | 'rent' | 'customs' | 'loading' | 'freight' | 'costs' | 'profit') => vehicles.reduce((s, v) => s + v[k], 0);
     return {
       vehicles,
-      totals: { revenue: sum('revenue'), rent: sum('rent'), customs: sum('customs'), loading: sum('loading'), costs: sum('costs'), profit: sum('profit') },
+      totals: { revenue: sum('revenue'), rent: sum('rent'), customs: sum('customs'), loading: sum('loading'), freight: sum('freight'), costs: sum('costs'), profit: sum('profit') },
     };
   }
 
