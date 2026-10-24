@@ -3,7 +3,7 @@ import { InvoiceKind } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
+import { CreateProductDto, MergeProductsDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsService } from './products.service';
 import { parseDeleteMode } from '../../common/delete-mode';
 
@@ -59,6 +59,13 @@ export class ProductsController {
   @Permissions('settings', 'invoices')
   create(@Body() dto: CreateProductDto) {
     return this.service.create(dto);
+  }
+
+  // قبل `:id` عشان «merge» ماتتقريش كـ id.
+  @Post('merge')
+  @Permissions('settings')
+  merge(@Body() dto: MergeProductsDto) {
+    return this.service.merge(dto);
   }
 
   @Patch(':id')

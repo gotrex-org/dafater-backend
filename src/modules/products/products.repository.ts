@@ -97,6 +97,73 @@ export class ProductsRepository {
     return adjustments + loans;
   }
 
+  /**
+   * دمج أصناف في صنف واحد — ذرّي. كل سطر يشاور على صنف مدموج بيتنقل للصنف الأساسي،
+   * والأرصدة مشتقة فبتتجمع لوحدها. الحالات اللي عليها قيد unique:
+   *   - قائمة أسعار فيها الصنفين: سعر الأساسي يفضل، وإلا ياخد سعر المدموج.
+   *   - فترة صنف على فاتورة فيها الصنفين: فترة الأساسي تفضل.
+   * الأسعار الثابتة الفاضية في الأساسي بتتملى من المدموج، والتثبيت في الفواتير بيتجمع.
+   */
+  merge(targetId: number, sourceIds: number[]) {
+    return this.prisma.$transaction(async (tx) => {
+      const target = await tx.product.findUniqueOrThrow({ where: { id: targetId } });
+      const sources = await tx.product.findMany({ where: { id: { in: sourceIds } } });
+
+      for (const item of await tx.supplierPriceListItem.findMany({ where: { productId: { in: sourceIds } } })) {
+        const existing = await tx.supplierPriceListItem.findUnique({
+          where: { priceListId_productId: { priceListId: item.priceListId, productId: targetId } },
+        });
+        if (!existing) {
+          await tx.supplierPriceListItem.update({ where: { id: item.id }, data: { productId: targetId } });
+          continue;
+        }
+        if (!(existing.price > 0) && item.price > 0) {
+          await tx.supplierPriceListItem.update({ where: { id: existing.id }, data: { price: item.price } });
+        }
+        await tx.supplierPriceListItem.delete({ where: { id: item.id } });
+      }
+
+      for (const week of await tx.invoiceItemWeek.findMany({ where: { productId: { in: sourceIds } } })) {
+        const existing = await tx.invoiceItemWeek.findUnique({
+          where: { invoiceId_productId: { invoiceId: week.invoiceId, productId: targetId } },
+        });
+        if (existing) await tx.invoiceItemWeek.delete({ where: { id: week.id } });
+        else await tx.invoiceItemWeek.update({ where: { id: week.id }, data: { productId: targetId } });
+      }
+
+      const where = { productId: { in: sourceIds } };
+      const data = { productId: targetId };
+      const items = await tx.invoiceItem.updateMany({ where, data });
+      const returns = await tx.returnItem.updateMany({ where, data });
+      const deals = await tx.dealItem.updateMany({ where, data });
+      const adjustments = await tx.adjustment.updateMany({ where, data });
+      const loans = await tx.loan.updateMany({ where, data });
+
+      const firstPositive = (pick: (p: typeof target) => number) =>
+        pick(target) > 0 ? pick(target) : sources.map(pick).find((v) => v > 0) ?? pick(target);
+      const merged = await tx.product.update({
+        where: { id: targetId },
+        data: {
+          price: firstPositive((p) => p.price),
+          purchasePrice: firstPositive((p) => p.purchasePrice),
+          salePrice: firstPositive((p) => p.salePrice),
+          pinSale: target.pinSale || sources.some((p) => p.pinSale),
+          pinPurchase: target.pinPurchase || sources.some((p) => p.pinPurchase),
+        },
+      });
+      await tx.product.deleteMany({ where: { id: { in: sourceIds } } });
+
+      return {
+        product: merged,
+        merged: sources.map((p) => p.name),
+        moved: {
+          invoiceItems: items.count, returnItems: returns.count, dealItems: deals.count,
+          adjustments: adjustments.count, loans: loans.count,
+        },
+      };
+    }, { timeout: 60000 });
+  }
+
   async removeCascade(id: number) {
     await this.prisma.adjustment.deleteMany({ where: { productId: id } });
     // LoanReturn rows cascade with their Loan (onDelete: Cascade on loanId).

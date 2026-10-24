@@ -1,7 +1,7 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
-import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
+import { CreateProductDto, MergeProductsDto, UpdateProductDto } from './dto/products.dto';
 import { ProductsRepository } from './products.repository';
 import { BalancesService } from '../balances/balances.service';
 import { deleteConflict, type DeleteMode } from '../../common/delete-mode';
@@ -41,6 +41,21 @@ export class ProductsService {
       ]),
     ];
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  /** دمج أصناف في صنف أساسي. الخدمي لا يُدمج مع صنف مخزني، لأن المخزون يُحسب للمخزني فقط. */
+  async merge(dto: MergeProductsDto) {
+    const sourceUids = [...new Set(dto.sourceIds)].filter((u) => u !== dto.targetId);
+    if (!sourceUids.length) throw new BadRequestException('اختر صنفاً واحداً على الأقل غير الصنف الأساسي');
+    const target = await this.repo.findOne(dto.targetId);
+    if (!target) throw new NotFoundException('الصنف الأساسي غير موجود');
+    const sources = await Promise.all(sourceUids.map((u) => this.repo.findOne(u)));
+    if (sources.some((s) => !s)) throw new NotFoundException('أحد الأصناف المختارة غير موجود');
+    const mixed = sources.find((s) => s!.service !== target.service);
+    if (mixed) {
+      throw new BadRequestException(`لا يمكن دمج «${mixed.name}» مع «${target.name}»: أحدهما خدمي والآخر مخزني`);
+    }
+    return this.repo.merge(target.id, sources.map((s) => s!.id));
   }
 
   create(dto: CreateProductDto) { return this.repo.create(dto); }
