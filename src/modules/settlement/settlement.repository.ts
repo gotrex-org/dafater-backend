@@ -190,7 +190,7 @@ export class SettlementRepository {
       select: {
         price: true,
         product: { select: { id: true, uid: true, name: true, unit: true, hidden: true } },
-        invoice: { select: { date: true, currency: true, exchangeRate: true } },
+        invoice: { select: { id: true, date: true, currency: true, exchangeRate: true } },
       },
       orderBy: { invoice: { date: 'asc' } },
     });

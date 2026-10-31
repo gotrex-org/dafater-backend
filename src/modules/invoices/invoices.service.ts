@@ -3,10 +3,11 @@ import { InvoiceKind } from '@prisma/client'; // used by create()
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 import { InvoicesRepository } from './invoices.repository';
+import { BalancesService } from '../balances/balances.service';
 
 @Injectable()
 export class InvoicesService {
-  constructor(private repo: InvoicesRepository) {}
+  constructor(private repo: InvoicesRepository, private balances: BalancesService) {}
 
   findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string, includeHidden = false) {
     return this.repo.findAll(q, kind, partyId, includeHidden);
@@ -22,6 +23,11 @@ export class InvoicesService {
   async findOne(id: string) {
     const inv = await this.repo.findOne(id);
     if (!inv) throw new NotFoundException('Invoice not found');
+    // فاتورة دولار: تسعيرها بالجنيه من دورة الدولار (FIFO على دفعات الوكيل).
+    if (inv.currency === 'USD') {
+      const f = (await this.balances.usdFifo()).byInvoice.get(inv.id);
+      return { ...inv, fifo: f ?? { usd: 0, egp: 0, pricedUsd: 0, unpricedUsd: 0, rate: 0 } };
+    }
     return inv;
   }
 

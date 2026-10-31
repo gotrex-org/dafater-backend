@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto } from './dto/forex.dto';
+import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto, UpdateAgentTxDto } from './dto/forex.dto';
 import { ForexRepository } from './forex.repository';
 
 @Injectable()
@@ -57,6 +57,26 @@ export class ForexService {
     if (!agent) throw new NotFoundException();
     const treasury = dto.treasuryId ? await this.repo.findTreasuryByUid(dto.treasuryId) : null;
     return this.repo.settle(agent, treasury?.id, dto);
+  }
+
+  async updateTx(txUid: string, dto: UpdateAgentTxDto) {
+    const agentTx = await this.repo.findAgentTxByUid(txUid);
+    if (!agentTx) throw new NotFoundException('الحركة غير موجودة');
+    let treasuryId: number | null | undefined;
+    if (dto.treasuryId !== undefined) {
+      if (dto.treasuryId) {
+        const t = await this.repo.findTreasuryByUid(dto.treasuryId);
+        if (!t) throw new NotFoundException('الخزنة غير موجودة');
+        treasuryId = t.id;
+      } else treasuryId = null;
+    }
+    let partyId: number | undefined;
+    if (agentTx.type === 'USD_OUT' && dto.partyId) {
+      const p = await this.repo.findPartyByUid(dto.partyId);
+      if (!p) throw new NotFoundException('المورد غير موجود');
+      partyId = p.id;
+    }
+    return this.repo.updateAgentTx(agentTx.id, dto, treasuryId, partyId);
   }
 
   async deleteTx(txUid: string) {

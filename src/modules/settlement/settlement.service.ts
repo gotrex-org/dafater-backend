@@ -363,13 +363,20 @@ export class SettlementService {
     const ids = onlySupplierId ? all.filter((i) => i === onlySupplierId) : all;
     if (!ids.length) return { ids: [] as number[], rows: [] };
     const lines = await this.repo.purchaseLines(ids);
+    // فاتورة شراء دولار: سعرها بالجنيه من دورة الدولار (FIFO على دفعات الوكيل)، وغير
+    // المسعّرة بالكامل بعد بدون سعر.
+    const fifo = lines.some((l) => l.invoice.currency === 'USD') ? await this.balances.usdFifo() : null;
+    const usdRate = (invoiceId: number) => {
+      const f = fifo?.byInvoice.get(invoiceId);
+      return f && f.unpricedUsd <= 1e-9 && f.rate > 0 ? f.rate : 0;
+    };
     return {
       ids: [...new Set(lines.map((l) => l.product.id))],
       rows: lines.map((l) => ({
         product: l.product,
         price: l.price,
         currency: l.invoice.currency,
-        rate: l.invoice.exchangeRate ?? 0,
+        rate: l.invoice.currency === 'USD' ? usdRate(l.invoice.id) : (l.invoice.exchangeRate ?? 0),
       })),
     };
   }

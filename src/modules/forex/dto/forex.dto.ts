@@ -34,3 +34,15 @@ export class SettleDto {
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
 }
+
+// تعديل حركة وكيل (أي نوع). الحقول غير الخاصة بنوع الحركة تُتجاهل.
+export class UpdateAgentTxDto {
+  @IsOptional() @IsDateString() date?: string;
+  @IsOptional() @IsNumber() @Min(0.01) egpAmount?: number;        // EGP_IN / SETTLE
+  @IsOptional() @IsIn(['in', 'out']) direction?: 'in' | 'out';    // SETTLE
+  @IsOptional() @IsString() treasuryId?: string;                  // EGP_IN / SETTLE
+  @IsOptional() @IsNumber() @Min(0.01) usdAmount?: number;        // USD_OUT
+  @IsOptional() @IsNumber() @Min(0.01) exchangeRate?: number;     // USD_OUT
+  @IsOptional() @IsString() partyId?: string;                     // USD_OUT
+  @IsOptional() @IsString() note?: string;                        // '' = حذف الملاحظة
+}

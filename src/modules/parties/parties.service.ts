@@ -82,6 +82,28 @@ export class PartiesService {
     let running = totalOpening;
     let periodOpening = totalOpening;
     const rows: any[] = [];
+
+    // طرف دولاري: كل سطر بقيمته بالجنيه من دورة الدولار (FIFO على دفعات الوكيل)،
+    // ورصيد جاري بالجنيه. غير المسعّر من الفاتورة يُقرَّب بآخر سعر في الرصيد فقط.
+    const isUsd = (party as any).currency === 'USD' || (partner as any)?.currency === 'USD';
+    const fifo = isUsd ? await this.balances.usdFifo() : null;
+    const lastRate = fifo
+      ? Math.max(...partyIds.map((pid) => fifo.byParty.get(pid)?.lastRate ?? 0), 0)
+      : 0;
+    const openEgp = (p: any) => (Number(p?.opening) || 0) * (p?.currency === 'USD' ? lastRate : 1);
+    let runningEgp = openEgp(party) + (partner ? openEgp(partner) : 0);
+    let periodOpeningEgp = runningEgp;
+    const egpOf = (t: { id: number; partyId: number | null; debit: number; credit: number }) => {
+      const f = fifo?.byTx.get(t.id);
+      if (!f) {
+        // طرف مرتبط بالجنيه: الحركة بالجنيه كما هي.
+        const usdParty = t.partyId != null && fifo?.byParty.has(t.partyId);
+        const net = (t.debit || 0) - (t.credit || 0);
+        return { signed: usdParty ? net * lastRate : net, egp: usdParty ? null : Math.abs(net), unpricedUsd: 0, rate: 0 };
+      }
+      const signed = f.side === 'debit' ? f.egp : -(f.egp + f.unpricedUsd * lastRate);
+      return { signed, egp: f.egp, unpricedUsd: f.unpricedUsd, rate: f.rate };
+    };
     // ترقيم مستندات الطرف (فاتورة/بيع خارجي) ورا بعض من أول تاريخه — بيتحسب كمان على
     // الحركات اللي قبل الفترة عشان الرقم يفضل ثابت مهما اتغيّر فلتر التاريخ.
     const docSeq = new Map<string, number>();
@@ -89,12 +111,15 @@ export class PartiesService {
     for (const t of txns) {
       const docKey = t.invoice?.uid ? `inv:${t.invoice.uid}` : t.deal?.uid ? `deal:${t.deal.uid}` : null;
       if (docKey && !docSeq.has(docKey)) docSeq.set(docKey, docSeq.size + 1);
+      const fx = fifo ? egpOf(t as any) : null;
       if (fromD && t.date < fromD) {
         running += (t.debit || 0) - (t.credit || 0);
         periodOpening = running;
+        if (fx) { runningEgp += fx.signed; periodOpeningEgp = runningEgp; }
         continue;
       }
       running += (t.debit || 0) - (t.credit || 0);
+      if (fx) runningEgp += fx.signed;
       if (toD && t.date > toD) continue;
       // مستند الشحن (الكشف وبنود الشحن): الفاتورة، أو عملية البيع الخارجي في كشف العميل
       // بس — بنود الشحن على العميل، فمش بتظهر في كشف المورد.
@@ -109,6 +134,7 @@ export class PartiesService {
         debit: t.debit,
         credit: t.credit,
         balance: running,
+        ...(fx ? { egp: fx.egp, egpBalance: runningEgp, usdUnpriced: fx.unpricedUsd, fxRate: fx.rate } : {}),
         partyRole: (t as any).party?.role ?? null,
         partyName: (t as any).party?.name ?? null,
         invoiceUid: t.invoice?.uid ?? null,
@@ -138,8 +164,12 @@ export class PartiesService {
     }
 
     const closing = rows.length ? rows[rows.length - 1].balance : periodOpening;
+    const closingEgp = rows.length ? rows[rows.length - 1].egpBalance : periodOpeningEgp;
     rows.reverse();
-    return { party, linkedParty: partner, opening: periodOpening, rows, balance: closing };
+    return {
+      party, linkedParty: partner, opening: periodOpening, rows, balance: closing,
+      ...(fifo ? { openingEgp: periodOpeningEgp, balanceEgp: closingEgp, lastRate } : {}),
+    };
   }
 
   // كشف حساب بوابة العميل: نفس أرقام الكشف الداخلي بس بصياغة العميل —

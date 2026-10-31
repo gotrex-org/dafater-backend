@@ -14,6 +14,7 @@ export class BalancesService {
   /** من غير مخزن = الإجمالي الموجود في كل المخازن */
   stockOf(productId: number, warehouseId?: number) { return this.repo.stockOf(productId, warehouseId); }
   avgCost(productId: number) { return this.repo.avgCost(productId); }
+  usdFifo() { return this.repo.usdFifo(); }
   warehouseStock(warehouseId: number) { return this.repo.warehouseStock(warehouseId); }
   warehouseValue(warehouseId: number) { return this.repo.warehouseValue(warehouseId); }
   totalInventoryValue() { return this.repo.totalInventoryValue(); }

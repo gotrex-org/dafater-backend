@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { computeUsdFifo, type FifoResult } from '../../common/usd-fifo';
 
 @Injectable()
 export class BalancesRepository {
@@ -25,24 +26,43 @@ export class BalancesRepository {
     return totalOpening + (agg._sum.debit || 0) - (agg._sum.credit || 0);
   }
 
-  // Weighted-average EGP-per-USD rate per party, over its rate-carrying (USD-invoice)
-  // movements — weighted by the USD amount of each movement. Used by the trial balance
-  // to convert a USD party's balance to EGP.
-  async avgExchangeRateByParty(): Promise<Record<number, number>> {
-    const txns = await this.prisma.transaction.findMany({
-      where: { exchangeRate: { gt: 0 }, partyId: { not: null } },
-      select: { partyId: true, debit: true, credit: true, exchangeRate: true },
+  // دورة الدولار (common/usd-fifo.ts): قيمة كل حركة على طرف دولاري بالجنيه، FIFO
+  // على دفعات الوكيل بسعر صرفها.
+  async usdFifo(): Promise<FifoResult> {
+    const parties = await this.prisma.party.findMany({ where: { currency: 'USD' }, select: { id: true, opening: true } });
+    if (!parties.length) return computeUsdFifo([], []);
+    const txs = await this.prisma.transaction.findMany({
+      where: { partyId: { in: parties.map((p) => p.id) } },
+      select: {
+        id: true, partyId: true, date: true, createdAt: true, debit: true, credit: true,
+        cashIn: true, cashOut: true, exchangeRate: true, invoiceId: true,
+      },
     });
-    const acc: Record<number, { w: number; wr: number }> = {};
-    for (const t of txns) {
-      const w = (t.debit || 0) + (t.credit || 0);
-      if (w <= 0 || t.partyId == null) continue;
-      if (!acc[t.partyId]) acc[t.partyId] = { w: 0, wr: 0 };
-      acc[t.partyId].w += w;
-      acc[t.partyId].wr += w * t.exchangeRate;
-    }
+    // آخر سعر توريد من أي وكيل — تقريب لمورد بدون أي دفعة بعد.
+    const last = await this.prisma.dollarAgentTx.findFirst({
+      where: { type: 'USD_OUT', exchangeRate: { gt: 0 } },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+      select: { exchangeRate: true },
+    });
+    return computeUsdFifo(
+      parties.map((p) => ({ id: p.id, opening: Number(p.opening) || 0 })),
+      txs.map((t) => ({
+        ...t, partyId: t.partyId!, debit: Number(t.debit) || 0, credit: Number(t.credit) || 0,
+        cashIn: Number(t.cashIn) || 0, cashOut: Number(t.cashOut) || 0, exchangeRate: Number(t.exchangeRate) || 0,
+      })),
+      last?.exchangeRate ?? 0,
+    );
+  }
+
+  // سعر تحويل رصيد الطرف الدولاري للجنيه = رصيده بالجنيه (FIFO) ÷ رصيده بالدولار.
+  // كل الشاشات اللي بتضرب الرصيد × السعر (الميزان، الرئيسية، كشف الحساب) تطلع
+  // بالتالي قيمة الدورة: الشرائح المتبقية بسعرها الحقيقي، وغير المسعّر بآخر سعر.
+  async avgExchangeRateByParty(): Promise<Record<number, number>> {
+    const { byParty } = await this.usdFifo();
     const out: Record<number, number> = {};
-    for (const [pid, v] of Object.entries(acc)) out[Number(pid)] = v.w > 0 ? v.wr / v.w : 0;
+    for (const [pid, v] of byParty) {
+      out[pid] = Math.abs(v.usdBalance) > 1e-9 ? v.egpBalance / v.usdBalance : v.lastRate;
+    }
     return out;
   }
 
@@ -123,30 +143,43 @@ export class BalancesRepository {
     return qty;
   }
 
-  async avgCost(productId: number): Promise<number> {
+  async avgCost(productId: number, fifo?: FifoResult): Promise<number> {
     const items = await this.prisma.invoiceItem.findMany({
       where: { productId, invoice: { kind: 'PURCHASE', fake: false } },
-      select: { qty: true, price: true, freight: true, tea: true, commission: true },
+      select: { qty: true, price: true, freight: true, tea: true, commission: true, invoice: { select: { id: true, currency: true } } },
     });
     let totalQty = 0;
     let totalAmt = 0;
     for (const it of items) {
-      totalQty += it.qty;
       // Landed cost: goods + freight (ناولون) + tea (شاي) + commission (عمولة) added to the item.
-      totalAmt += it.qty * it.price + (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
+      const extras = (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
+      if (it.invoice.currency === 'USD') {
+        // سعر الصنف بالدولار → جنيه بسعر الدفعات اللي قابلت الفاتورة (FIFO). الجزء غير
+        // المسعّر من الفاتورة لا يدخل التكلفة لحد ما الوكيل يورّد.
+        fifo ??= await this.usdFifo();
+        const f = fifo.byInvoice.get(it.invoice.id);
+        if (!f || f.usd <= 0 || f.pricedUsd <= 0) continue;
+        const frac = Math.min(1, f.pricedUsd / f.usd);
+        totalQty += it.qty * frac;
+        totalAmt += it.qty * it.price * frac * f.rate + extras * frac;
+        continue;
+      }
+      totalQty += it.qty;
+      totalAmt += it.qty * it.price + extras;
     }
     return totalQty > 0 ? totalAmt / totalQty : 0;
   }
 
   async warehouseStock(warehouseId: number) {
     const products = await this.prisma.product.findMany({ where: { service: false } });
+    const fifo = await this.usdFifo();
     const rows = await Promise.all(
       products.map(async (p) => {
         const qty = await this.stockOf(p.id, warehouseId);
         // A manually-set price (from the product's own settings) overrides the
         // computed weighted-average purchase cost — lets you value stock directly
         // instead of relying on purchase-invoice history (which may not exist yet).
-        const cost = p.price > 0 ? p.price : await this.avgCost(p.id);
+        const cost = p.price > 0 ? p.price : await this.avgCost(p.id, fifo);
         // سعر الشراء/البيع الثابت بيتبعت مع الرصيد عشان يتعرض ويتعدّل من شاشة
         // المخازن على طول — هما نفسهم اللي بيتحطّوا تلقائيًا في سطر الفاتورة.
         return {

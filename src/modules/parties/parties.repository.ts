@@ -5,7 +5,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
 
-const LINKED_SELECT = { id: true, uid: true, name: true, role: true } as const;
+const LINKED_SELECT = { id: true, uid: true, name: true, role: true, currency: true, opening: true } as const;
 
 @Injectable()
 export class PartiesRepository {

@@ -157,6 +157,31 @@ export class TransactionsRepository {
       });
     }
 
+    // Dollar-agent balance is derived from DollarAgentTx, not from the Transaction row —
+    // mirror amount/date/treasury/party edits onto the paired agent tx so the agent's
+    // balance follows what was edited in the treasury.
+    const agentTx = await this.prisma.dollarAgentTx.findFirst({ where: { txId: txn.id } });
+    if (agentTx) {
+      const sync: any = {};
+      if (data.date !== undefined) sync.date = data.date;
+      if (data.note !== undefined) sync.note = data.note;
+      if (agentTx.type === 'EGP_IN') {
+        if (data.cashOut !== undefined) sync.egpAmount = Number(updated.cashOut) || 0;
+        if (data.treasuryId !== undefined) sync.treasuryId = data.treasuryId;
+      } else if (agentTx.type === 'SETTLE') {
+        // positive = agent paid us back (cashIn), negative = we paid the agent (cashOut)
+        if (data.cashIn !== undefined) sync.egpAmount = Number(updated.cashIn) || 0;
+        if (data.cashOut !== undefined) sync.egpAmount = -(Number(updated.cashOut) || 0);
+        if (data.treasuryId !== undefined) sync.treasuryId = data.treasuryId;
+      } else if (agentTx.type === 'USD_OUT') {
+        if (data.debit !== undefined) sync.usdAmount = Number(updated.debit) || 0;
+        if (data.partyId !== undefined) sync.partyId = data.partyId;
+      }
+      if (Object.keys(sync).length) {
+        await this.prisma.dollarAgentTx.update({ where: { id: agentTx.id }, data: sync });
+      }
+    }
+
     return updated;
   }
 
