@@ -38,7 +38,10 @@ export class ManifestsRepository {
       where: { uid: id },
       include: {
         items: true,
-        driverTrips: { select: { uid: true, arrivalDate: true, driverName: true } },
+        driverTrips: {
+          select: { uid: true, arrivalDate: true, driverName: true, vehicleNo: true, trailerNo: true, vehicleLabel: true, departureDate: true, agreedFreight: true },
+          orderBy: { id: 'asc' },
+        },
         invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK,
         clearingAgentParty: { select: { uid: true, name: true } },
         transactions: { where: { type: CLEARANCE_TYPE }, select: { credit: true } },

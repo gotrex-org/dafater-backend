@@ -4,7 +4,7 @@ import { DriverTripsRepository } from './driver-trips.repository';
 import { DriversService } from '../drivers/drivers.service';
 import { AppConfigService } from '../config/config.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { autoPairTrip, syncManifestTrips } from '../../common/manifest-trip-sync';
+import { autoPairTrip, copyTripToManifest, syncManifestTrips, syncTripDocToManifest } from '../../common/manifest-trip-sync';
 
 function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
@@ -114,8 +114,10 @@ export class DriverTripsService {
     }
 
     // الرحلة بتاخد فاتورة كشف عربيتها تلقائياً
-    if (manifestId) await syncManifestTrips(this.prisma, manifestId);
-    else await autoPairTrip(this.prisma, trip.id); // رحلة من غير كشف: تتربط بكشف عربيتها لو موجود
+    if (manifestId) {
+      await syncManifestTrips(this.prisma, manifestId);
+      await copyTripToManifest(this.prisma, trip.id); // بيانات السائق على الكشف من رحلته
+    } else await autoPairTrip(this.prisma, trip.id); // رحلة من غير كشف: تتربط بكشف عربيتها لو موجود
 
     return this.findOne(trip.uid);
   }
@@ -172,9 +174,17 @@ export class DriverTripsService {
   // ربط/فك ربط الرحلة بفاتورة أو بعملية بيع خارجي. رحلة واحدة = مستند واحد، والعمود
   // unique في الداتابيز، فبنتأكد الأول بدل ما الإدخال يقع بخطأ constraint مش مفهوم.
   // ربط واحد منهم بيفك التاني.
+  // الربط من هنا بيوصل لكشف العربية كمان (syncTripDocToManifest).
   async linkInvoice(uid: string, invoiceUid: string | null, dealUid: string | null = null) {
     const trip = await this.repo.findByUid(uid);
     if (!trip) throw new NotFoundException('كشف السائق غير موجود');
+    const prev = { invoiceId: trip.invoiceId ?? null, dealId: (trip as any).dealId ?? null };
+    const res = await this.linkInvoiceRaw(uid, trip, invoiceUid, dealUid);
+    await syncTripDocToManifest(this.prisma, trip.id, prev);
+    return res;
+  }
+
+  private async linkInvoiceRaw(uid: string, trip: any, invoiceUid: string | null, dealUid: string | null) {
     if (!invoiceUid && !dealUid) return this.repo.update(uid, { invoiceId: null, dealId: null });
 
     if (dealUid) {
@@ -245,10 +255,19 @@ export class DriverTripsService {
       ...(partyId !== undefined ? { partyId } : {}),
       ...(manifestId !== undefined ? { manifestId } : {}),
     });
-    // ربط الرحلة بكشف عربية بيربطها بفاتورة الكشف تلقائياً
-    if (manifestId) await syncManifestTrips(this.prisma, manifestId);
+    // ربط الرحلة بكشف عربية بيربطها بفاتورة الكشف تلقائياً، وبيانات السائق بتنزل على الكشف
+    if (manifestId) {
+      await syncManifestTrips(this.prisma, manifestId);
+      // الكشف من غير مستند والرحلة عليها فاتورة: الكشف ياخدها
+      await syncTripDocToManifest(this.prisma, updated.id);
+      await copyTripToManifest(this.prisma, updated.id);
+    }
     // فك الربط بالكشف صريح (manifestId = null) مابيرجعش يتربط تلقائياً
-    else if (manifestId === undefined) await autoPairTrip(this.prisma, updated.id);
+    else if (manifestId === undefined) {
+      await autoPairTrip(this.prisma, updated.id);
+      const touchesDriver = ['driverName', 'vehicleNo', 'vehicleLabel', 'trailerNo'].some((k) => (dto as any)[k] !== undefined);
+      if (touchesDriver) await copyTripToManifest(this.prisma, updated.id);
+    }
     return updated;
   }
 

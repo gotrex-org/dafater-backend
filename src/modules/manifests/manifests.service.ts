@@ -5,7 +5,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 import { ManifestsRepository } from './manifests.repository';
 import { DriversService } from '../drivers/drivers.service';
-import { autoPairManifest, syncManifestTrips } from '../../common/manifest-trip-sync';
+import { autoPairManifest, copyManifestToTrip, syncManifestTrips } from '../../common/manifest-trip-sync';
 
 @Injectable()
 export class ManifestsService {
@@ -51,8 +51,20 @@ export class ManifestsService {
     if (!m) return m;
     const { transactions, clearingAgentParty, ...rest } = m;
     const total = (transactions ?? []).reduce((s: number, t: any) => s + (t.credit || 0), 0);
+    // بيانات السائق للورقة والإقرار: الكشف أولاً، وبعده رحلته، وبعده سجل السائقين
+    const trip = (rest.driverTrips ?? [])[0];
+    const driverName = rest.driverName?.trim() || trip?.driverName || null;
+    const reg = driverName && (!rest.driverPhone || !rest.driverNID)
+      ? await this.prisma.driver.findUnique({ where: { name: driverName }, select: { phone: true, nationalId: true } })
+      : null;
     return {
       ...rest,
+      driverName,
+      driverPhone: rest.driverPhone || reg?.phone || null,
+      driverNID: rest.driverNID || reg?.nationalId || null,
+      vehicleNo: rest.vehicleNo || trip?.vehicleNo || null,
+      trailerNo: rest.trailerNo || trip?.trailerNo || null,
+      vehicleLabel: rest.vehicleLabel || trip?.vehicleLabel || null,
       clearance: total || clearingAgentParty
         ? { total, agent: clearingAgentParty ?? null }
         : null,
@@ -91,6 +103,9 @@ export class ManifestsService {
     const manifest = await this.repo.update(id, dto);
     // رحلة السائق بتتربط/تتفك مع فاتورة كشف عربيتها
     if (touchesDoc) await syncManifestTrips(this.prisma, manifest.id, prev ?? undefined);
+    // تعديل السائق أو العربية على الكشف بيتنقل لرحلته
+    const touchesDriver = ['driverName', 'vehicleNo', 'vehicleLabel', 'trailerNo'].some((k) => (dto as any)[k] !== undefined);
+    if (touchesDriver) await copyManifestToTrip(this.prisma, manifest.id);
     // كشف من غير رحلة: يدوّر على رحلة السائق بتاعته ويتربط بيها تلقائياً
     await autoPairManifest(this.prisma, manifest.id);
     return manifest;
