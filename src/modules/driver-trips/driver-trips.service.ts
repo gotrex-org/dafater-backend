@@ -4,7 +4,7 @@ import { DriverTripsRepository } from './driver-trips.repository';
 import { DriversService } from '../drivers/drivers.service';
 import { AppConfigService } from '../config/config.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { syncManifestTrips } from '../../common/manifest-trip-sync';
+import { autoPairTrip, syncManifestTrips } from '../../common/manifest-trip-sync';
 
 function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
@@ -115,6 +115,7 @@ export class DriverTripsService {
 
     // الرحلة بتاخد فاتورة كشف عربيتها تلقائياً
     if (manifestId) await syncManifestTrips(this.prisma, manifestId);
+    else await autoPairTrip(this.prisma, trip.id); // رحلة من غير كشف: تتربط بكشف عربيتها لو موجود
 
     return this.findOne(trip.uid);
   }
@@ -246,6 +247,8 @@ export class DriverTripsService {
     });
     // ربط الرحلة بكشف عربية بيربطها بفاتورة الكشف تلقائياً
     if (manifestId) await syncManifestTrips(this.prisma, manifestId);
+    // فك الربط بالكشف صريح (manifestId = null) مابيرجعش يتربط تلقائياً
+    else if (manifestId === undefined) await autoPairTrip(this.prisma, updated.id);
     return updated;
   }
 

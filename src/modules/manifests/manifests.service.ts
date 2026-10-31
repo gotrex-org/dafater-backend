@@ -5,7 +5,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 import { ManifestsRepository } from './manifests.repository';
 import { DriversService } from '../drivers/drivers.service';
-import { syncManifestTrips } from '../../common/manifest-trip-sync';
+import { autoPairManifest, syncManifestTrips } from '../../common/manifest-trip-sync';
 
 @Injectable()
 export class ManifestsService {
@@ -73,6 +73,8 @@ export class ManifestsService {
         trailerNo: dto.trailerNo || undefined,
       }).catch(() => {});
     }
+    // كشف من غير رحلة: يدوّر على رحلة السائق بتاعته ويتربط بيها تلقائياً
+    await autoPairManifest(this.prisma, manifest.id);
     return manifest;
   }
 
@@ -89,6 +91,8 @@ export class ManifestsService {
     const manifest = await this.repo.update(id, dto);
     // رحلة السائق بتتربط/تتفك مع فاتورة كشف عربيتها
     if (touchesDoc) await syncManifestTrips(this.prisma, manifest.id, prev ?? undefined);
+    // كشف من غير رحلة: يدوّر على رحلة السائق بتاعته ويتربط بيها تلقائياً
+    await autoPairManifest(this.prisma, manifest.id);
     return manifest;
   }
   remove(id: string) { return this.repo.remove(id); }
