@@ -96,6 +96,9 @@ export class PartiesService {
       }
       running += (t.debit || 0) - (t.credit || 0);
       if (toD && t.date > toD) continue;
+      // مستند الشحن (الكشف وبنود الشحن): الفاتورة، أو عملية البيع الخارجي في كشف العميل
+      // بس — بنود الشحن على العميل، فمش بتظهر في كشف المورد.
+      const shipDoc: any = t.invoice ?? ((t as any).party?.role === 'SUPPLIER' ? null : t.deal);
       rows.push({
         id: t.uid,
         date: t.date,
@@ -110,15 +113,15 @@ export class PartiesService {
         partyName: (t as any).party?.name ?? null,
         invoiceUid: t.invoice?.uid ?? null,
         dealUid: t.deal?.uid ?? null,
-        manifestDate: t.invoice?.manifests?.[0]?.date ?? null,
-        manifestNo: t.invoice?.manifests?.[0]?.no ?? null,
-        manifestArrived: t.invoice?.manifests?.[0]?.driverTrips?.some((dt: any) => dt.arrivalDate != null) ?? false,
+        manifestDate: shipDoc?.manifests?.[0]?.date ?? null,
+        manifestNo: shipDoc?.manifests?.[0]?.no ?? null,
+        manifestArrived: shipDoc?.manifests?.[0]?.driverTrips?.some((dt: any) => dt.arrivalDate != null) ?? false,
         // بنود الشحن على الفاتورة (نولون/تحميل…) — وجود بند ناولون معناه إن البضاعة
         // اتشحنت من عندنا مش من شركة شحن، والبورتال بيميّز اليوم ده.
-        invoiceCharges: t.invoice
-          ? (t.invoice as any).charges.map((c: any) => ({ name: c.chargeType?.name ?? '', amount: (c.qty ?? 1) * c.price }))
+        invoiceCharges: shipDoc
+          ? shipDoc.charges.map((c: any) => ({ name: c.chargeType?.name ?? '', amount: (c.qty ?? 1) * c.price }))
           : null,
-        shipped: !!t.invoice && (t.invoice as any).charges.some((c: any) => /نا?ولون/.test(c.chargeType?.name ?? '')),
+        shipped: !!shipDoc && shipDoc.charges.some((c: any) => /نا?ولون/.test(c.chargeType?.name ?? '')),
         invoiceItems: t.invoice
           ? t.invoice.items.map((it: any) => ({ name: it.product?.name ?? '', qty: it.qty, price: it.price }))
           : t.deal

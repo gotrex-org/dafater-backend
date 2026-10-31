@@ -5,6 +5,9 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 
+// عملية البيع الخارجي المربوطة — بنفس شكل الفاتورة المربوطة عشان الشاشات تعرضها زيها.
+const DEAL_LINK = { select: { uid: true, no: true, date: true } } as const;
+
 @Injectable()
 export class ManifestsRepository {
   constructor(private prisma: PrismaService) {}
@@ -24,7 +27,7 @@ export class ManifestsRepository {
     return paginate(this.prisma.manifest, q, {
       where,
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 
@@ -36,7 +39,7 @@ export class ManifestsRepository {
       include: {
         items: true,
         driverTrips: { select: { uid: true, arrivalDate: true, driverName: true } },
-        invoice: { select: { uid: true, no: true, date: true, kind: true } },
+        invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK,
         clearingAgentParty: { select: { uid: true, name: true } },
         transactions: { where: { type: CLEARANCE_TYPE }, select: { credit: true } },
       },
@@ -51,24 +54,26 @@ export class ManifestsRepository {
         OR: [
           { clientName: party.name },
           { invoice: { party: { uid: partyUid } } },
+          { deal: { client: { uid: partyUid } } },
         ],
       },
-      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
+      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
   async create(dto: CreateManifestDto, finalNo: string) {
-    const { items, date, invoiceId, no: _no, ...rest } = dto;
+    const { items, date, invoiceId, dealId, no: _no, ...rest } = dto;
     return this.prisma.manifest.create({
       data: {
         ...rest,
         no: finalNo,
         date: new Date(date),
         invoice: invoiceId ? { connect: { uid: invoiceId } } : undefined,
+        deal: dealId ? { connect: { uid: dealId } } : undefined,
         items: { create: items },
       },
-      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
+      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 
@@ -86,19 +91,24 @@ export class ManifestsRepository {
 
   async update(id: string, dto: UpdateManifestDto) {
     // invoiceId بيتشال من الـ spread لأنه uid (نص) مش الـ FK الرقمي — لازم connect.
-    const { items, date, invoiceId, ...rest } = dto;
+    const { items, date, invoiceId, dealId, ...rest } = dto;
     return this.prisma.manifest.update({
       where: { uid: id },
       data: {
         ...rest,
         ...(date ? { date: new Date(date) } : {}),
         // سلسلة فاضية = فك الربط بالفاتورة؛ undefined = ماتلمسش الربط.
+        // الكشف بيتربط بفاتورة أو بعملية بيع خارجي — ربط واحد منهم بيفك التاني.
         ...(invoiceId !== undefined
           ? { invoice: invoiceId ? { connect: { uid: invoiceId } } : { disconnect: true } }
           : {}),
+        ...(dealId !== undefined
+          ? { deal: dealId ? { connect: { uid: dealId } } : { disconnect: true } }
+          : invoiceId ? { deal: { disconnect: true } } : {}),
+        ...(dealId && invoiceId === undefined ? { invoice: { disconnect: true } } : {}),
         ...(items !== undefined ? { items: { deleteMany: {}, createMany: { data: items } } } : {}),
       },
-      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } } },
+      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 

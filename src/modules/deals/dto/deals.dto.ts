@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   IsArray, IsDateString, IsNumber, IsOptional, IsString, ValidateNested,
 } from 'class-validator';
+import { InvoiceChargeDto } from '../../invoices/dto/invoices.dto';
 
 export class DealItemDto {
   @IsString() productId: string;
@@ -25,10 +26,15 @@ export class CreateDealDto {
   @IsString() clientId: string;
   @IsString() supplierId: string;
   @IsArray() @ValidateNested({ each: true }) @Type(() => DealItemDto) items: DealItemDto[];
+  // بنود الشحن على العميل — نفس شكل بنود الفاتورة
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => InvoiceChargeDto)
+  charges?: InvoiceChargeDto[];
   @IsOptional() @IsNumber() paidIn?: number;
   @IsOptional() @IsNumber() paidOut?: number;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsString() note?: string;
+  // سعر صرف الدولار لما المورد دولاري
+  @IsOptional() @IsNumber() exchangeRate?: number;
   @IsOptional() @IsNumber() commissionAmount?: number;
   @IsOptional() @IsString() commissionPartyId?: string;
   @IsOptional() @IsNumber() nawlon?: number;

@@ -15,6 +15,8 @@ export class CreateManifestDto {
   @IsDateString() date: string;
   @IsString() clientName: string;
   @IsOptional() @IsString() invoiceId?: string;
+  // أو عملية بيع خارجي (uid) بدل الفاتورة — الكشف بيتربط بواحد منهم بس.
+  @IsOptional() @IsString() dealId?: string;
   @IsOptional() @IsString() vehicleNo?: string;
   @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;
@@ -34,6 +36,8 @@ export class UpdateManifestDto {
   // ربط العربية بفاتورة (uid) — سلسلة فاضية معناها فك الربط. الربط هو اللي بيخلّي
   // العربية تظهر كتاب جوّه الفاتورة.
   @IsOptional() @IsString() invoiceId?: string;
+  // عملية بيع خارجي (uid) — سلسلة فاضية = فك الربط. ربط واحد منهم بيفك التاني.
+  @IsOptional() @IsString() dealId?: string;
   @IsOptional() @IsString() vehicleNo?: string;
   @IsOptional() @IsString() vehicleLabel?: string; // مسمّى العربية
   @IsOptional() @IsString() trailerNo?: string;

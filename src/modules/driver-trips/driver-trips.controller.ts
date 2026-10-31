@@ -37,7 +37,7 @@ export class DriverTripsController {
   // ربط الرحلة بفاتورة — أو فك الربط بإرسال invoiceId فاضي
   @Patch(':id/invoice')
   linkInvoice(@Param('id') id: string, @Body() dto: LinkInvoiceDto) {
-    return this.service.linkInvoice(id, dto.invoiceId?.trim() || null);
+    return this.service.linkInvoice(id, dto.invoiceId?.trim() || null, dto.dealId?.trim() || null);
   }
 
   @Post(':id/payments')

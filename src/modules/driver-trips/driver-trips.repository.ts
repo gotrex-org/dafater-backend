@@ -19,6 +19,8 @@ const include = {
   party: { select: { uid: true, name: true } },
   payments: { orderBy: { date: 'asc' as const } },
   invoice: { select: { uid: true, no: true, date: true, items: invoiceServiceItems, charges: invoiceCharges } },
+  // أو عملية بيع خارجي بدل الفاتورة — بنود شحنها هي اللي اتحصّلت من العميل.
+  deal: { select: { uid: true, no: true, date: true, charges: invoiceCharges } },
 };
 
 @Injectable()
@@ -80,6 +82,27 @@ export class DriverTripsRepository {
 
   findInvoiceByUid(uid: string) {
     return this.prisma.invoice.findUnique({ where: { uid }, include: { driverTrip: { select: { uid: true } } } });
+  }
+
+  findDealByUid(uid: string) {
+    return this.prisma.deal.findUnique({ where: { uid }, include: { driverTrip: { select: { uid: true } } } });
+  }
+
+  // عمليات البيع الخارجي لنفس العميل اللي عليها بند شحن ولسه متربطتش برحلة تانية.
+  candidateDeals(partyId: number, currentDealId: number | null) {
+    return this.prisma.deal.findMany({
+      where: {
+        clientId: partyId,
+        charges: { some: {} },
+        OR: [
+          { driverTrip: { is: null } },
+          ...(currentDealId ? [{ id: currentDealId }] : []),
+        ],
+      },
+      select: { uid: true, no: true, date: true, charges: invoiceCharges },
+      orderBy: { date: 'desc' },
+      take: 50,
+    });
   }
 
   // فواتير البيع بتاعة نفس العميل اللي فيها بند خدمة (ناولون/تحميل…) ولسه متربطتش

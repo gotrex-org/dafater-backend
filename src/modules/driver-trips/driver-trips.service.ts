@@ -8,8 +8,9 @@ function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+// الفاتورة المربوطة أو عملية البيع الخارجي (العملية مالهاش أصناف خدمية قديمة).
 type TripInvoice = {
-  items: { qty: number; price: number; product: { name: string } | null }[];
+  items?: { qty: number; price: number; product: { name: string } | null }[];
   charges?: { qty: number; price: number; chargeType: { name: string } | null }[];
 } | null;
 
@@ -128,7 +129,7 @@ export class DriverTripsService {
       return {
         ...t, totalFreightPaid, totalDelayPaid, totalAdvancePaid, totalWeightDiffPaid,
         remainingFreight, remainingDelay, remainingWeightDiff, trulyClosed,
-        ...tripMargin((t as any).invoice, t.agreedFreight),
+        ...tripMargin((t as any).invoice ?? (t as any).deal, t.agreedFreight),
       };
     });
     let result = enriched;
@@ -141,7 +142,7 @@ export class DriverTripsService {
   async findOne(uid: string) {
     const trip = await this.repo.findByUid(uid);
     if (!trip) throw new NotFoundException('كشف السائق غير موجود');
-    return { ...trip, ...tripMargin((trip as any).invoice, trip.agreedFreight) };
+    return { ...trip, ...tripMargin((trip as any).invoice ?? (trip as any).deal, trip.agreedFreight) };
   }
 
   // الفواتير اللي ينفع تتربط بالرحلة: نفس العميل، فيها بند خدمة، ولسه متربطتش
@@ -150,27 +151,49 @@ export class DriverTripsService {
     const trip = await this.repo.findByUid(uid);
     if (!trip) throw new NotFoundException('كشف السائق غير موجود');
     if (!trip.partyId) return [];
-    return this.repo.candidateInvoices(trip.partyId, trip.invoiceId ?? null);
+    // فواتير البيع وعمليات البيع الخارجي في قائمة واحدة — `type` بيفرّق بينهم.
+    const [invoices, deals] = await Promise.all([
+      this.repo.candidateInvoices(trip.partyId, trip.invoiceId ?? null),
+      this.repo.candidateDeals(trip.partyId, (trip as any).dealId ?? null),
+    ]);
+    return [
+      ...invoices.map((i) => ({ ...i, type: 'invoice' as const })),
+      ...deals.map((d) => ({ ...d, items: [], type: 'deal' as const })),
+    ].sort((a, b) => b.date.getTime() - a.date.getTime());
   }
 
-  // ربط/فك ربط الرحلة بفاتورة. رحلة واحدة = فاتورة واحدة، والعمود unique في
-  // الداتابيز، فبنتأكد الأول بدل ما الإدخال يقع بخطأ constraint مش مفهوم.
-  async linkInvoice(uid: string, invoiceUid: string | null) {
+  // ربط/فك ربط الرحلة بفاتورة أو بعملية بيع خارجي. رحلة واحدة = مستند واحد، والعمود
+  // unique في الداتابيز، فبنتأكد الأول بدل ما الإدخال يقع بخطأ constraint مش مفهوم.
+  // ربط واحد منهم بيفك التاني.
+  async linkInvoice(uid: string, invoiceUid: string | null, dealUid: string | null = null) {
     const trip = await this.repo.findByUid(uid);
     if (!trip) throw new NotFoundException('كشف السائق غير موجود');
-    if (!invoiceUid) return this.repo.update(uid, { invoiceId: null });
+    if (!invoiceUid && !dealUid) return this.repo.update(uid, { invoiceId: null, dealId: null });
 
-    const invoice = await this.repo.findInvoiceByUid(invoiceUid);
+    if (dealUid) {
+      const deal = await this.repo.findDealByUid(dealUid);
+      if (!deal) throw new NotFoundException('عملية البيع الخارجي غير موجودة');
+      if (trip.partyId && deal.clientId !== trip.partyId) {
+        throw new BadRequestException('العملية ليست لنفس عميل الرحلة');
+      }
+      const linkedTrip = (deal as any).driverTrip as { uid: string } | null;
+      if (linkedTrip && linkedTrip.uid !== uid) {
+        throw new BadRequestException('هذه العملية مرتبطة برحلة أخرى');
+      }
+      return this.repo.update(uid, { dealId: deal.id, invoiceId: null });
+    }
+
+    const invoice = await this.repo.findInvoiceByUid(invoiceUid!);
     if (!invoice) throw new NotFoundException('الفاتورة غير موجودة');
-    if (invoice.kind !== 'SALE') throw new BadRequestException('الربط بيكون بفاتورة بيع بس');
+    if (invoice.kind !== 'SALE') throw new BadRequestException('الربط يكون بفاتورة بيع فقط');
     if (trip.partyId && invoice.partyId !== trip.partyId) {
-      throw new BadRequestException('الفاتورة مش لنفس عميل الرحلة');
+      throw new BadRequestException('الفاتورة ليست لنفس عميل الرحلة');
     }
     const linked = (invoice as any).driverTrip as { uid: string } | null;
     if (linked && linked.uid !== uid) {
-      throw new BadRequestException('الفاتورة دي مربوطة برحلة تانية');
+      throw new BadRequestException('هذه الفاتورة مرتبطة برحلة أخرى');
     }
-    return this.repo.update(uid, { invoiceId: invoice.id });
+    return this.repo.update(uid, { invoiceId: invoice.id, dealId: null });
   }
 
   async update(uid: string, dto: UpdateDriverTripDto) {

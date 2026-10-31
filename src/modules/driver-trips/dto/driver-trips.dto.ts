@@ -54,4 +54,6 @@ export class PatchWeightDiffDto {
 // ربط الرحلة بفاتورة البيع اللي الناولون اتحصّل فيها — سلسلة فاضية = فك الربط.
 export class LinkInvoiceDto {
   @IsOptional() @IsString() invoiceId?: string;
+  // أو عملية بيع خارجي بدل الفاتورة
+  @IsOptional() @IsString() dealId?: string;
 }

@@ -22,8 +22,16 @@ export class ManifestsService {
 
   /** ربط/فك بند شحن من فاتورة العربية بالعربية. */
   async assignCharge(uid: string, chargeUid: string, assign: boolean) {
-    const m = await this.prisma.manifest.findUnique({ where: { uid }, select: { id: true, invoiceId: true } });
+    const m = await this.prisma.manifest.findUnique({ where: { uid }, select: { id: true, invoiceId: true, dealId: true } });
     if (!m) throw new NotFoundException('الكشف غير موجود');
+    // البند ممكن يكون على عملية بيع خارجي بدل الفاتورة — نفس القواعد.
+    const dc = await this.prisma.dealCharge.findUnique({ where: { uid: chargeUid }, select: { id: true, dealId: true, manifestId: true } });
+    if (dc) {
+      if (dc.dealId !== m.dealId) throw new BadRequestException('البند ليس على عملية هذه العربية');
+      if (!assign && dc.manifestId !== m.id) throw new BadRequestException('البند غير مربوط بهذه العربية');
+      await this.prisma.dealCharge.update({ where: { id: dc.id }, data: { manifestId: assign ? m.id : null } });
+      return { ok: true };
+    }
     const c = await this.prisma.invoiceCharge.findUnique({ where: { uid: chargeUid }, select: { id: true, invoiceId: true, manifestId: true } });
     if (!c) throw new NotFoundException('البند غير موجود');
     if (c.invoiceId !== m.invoiceId) throw new BadRequestException('البند ليس على فاتورة هذه العربية');
@@ -52,6 +60,7 @@ export class ManifestsService {
   findForParty(partyUid: string) { return this.repo.findForParty(partyUid); }
 
   async create(dto: CreateManifestDto) {
+    if (dto.invoiceId && dto.dealId) throw new BadRequestException('اربط الكشف بفاتورة أو بعملية بيع خارجي، وليس الاثنين');
     const finalNo = dto.no?.trim() || (await this.repo.nextNoForClient(dto.clientName));
     const manifest = await this.repo.create(dto, finalNo);
     if (dto.driverName?.trim()) {
@@ -70,6 +79,9 @@ export class ManifestsService {
     return { no: await this.repo.nextNoForClient(clientName) };
   }
 
-  update(id: string, dto: UpdateManifestDto) { return this.repo.update(id, dto); }
+  update(id: string, dto: UpdateManifestDto) {
+    if (dto.invoiceId && dto.dealId) throw new BadRequestException('اربط الكشف بفاتورة أو بعملية بيع خارجي، وليس الاثنين');
+    return this.repo.update(id, dto);
+  }
   remove(id: string) { return this.repo.remove(id); }
 }

@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 
 /** نوع حركة الناولون الداخلي على سطر الفاتورة (يُدفع نقداً من خزنة). */
 export const FREIGHT_TX_TYPE = 'ناولون';
+/** نوع حركة الناولون على سطر عملية البيع الخارجي — نفس معاملة ناولون فاتورة البيع. */
+export const DEAL_FREIGHT_TX_TYPE = 'ناولون خارجي';
 
 /**
  * ربح العربية — قسم «تكاليف الشحن» في كشف العربية، وتقرير ربح كل عربية.
@@ -18,6 +20,9 @@ export const FREIGHT_TX_TYPE = 'ناولون';
  *    مربوط بالعربية بيرجع في `otherExpenses` للعرض بس، ومش داخل في الربح.
  *  - الناولون: حركات «ناولون» المتسجلة على فاتورة البيع المربوطة بالعربية — بتتخصم
  *    تلقائي أول ما الفاتورة تتربط. لو الفاتورة عليها أكتر من عربية، بيتقسم بالتساوي.
+ *
+ * العربية ممكن تتربط بعملية بيع خارجي بدل الفاتورة: بنود شحنها (DealCharge) بتتحسب
+ * بنفس القواعد، وناولونها حركات «ناولون خارجي».
  */
 export async function computeVehicleProfits(prisma: PrismaService, where: Prisma.ManifestWhereInput) {
   const manifests = await prisma.manifest.findMany({
@@ -41,11 +46,33 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
           },
         },
       },
+      deal: {
+        select: {
+          uid: true, no: true,
+          _count: { select: { manifests: true } },
+          transactions: {
+            where: { type: DEAL_FREIGHT_TX_TYPE },
+            select: { uid: true, date: true, cashOut: true, cashIn: true, note: true, treasury: { select: { name: true } } },
+            orderBy: [{ date: 'asc' }, { id: 'asc' }],
+          },
+          charges: {
+            where: { manifestId: null },
+            select: { uid: true, qty: true, price: true, note: true, chargeType: { select: { name: true } } },
+          },
+        },
+      },
       charges: {
         select: {
           uid: true, qty: true, price: true, note: true,
           chargeType: { select: { name: true } },
           invoice: { select: { uid: true, no: true, kind: true } },
+        },
+      },
+      dealCharges: {
+        select: {
+          uid: true, qty: true, price: true, note: true,
+          chargeType: { select: { name: true } },
+          deal: { select: { no: true } },
         },
       },
       driverTrips: { select: { uid: true, driverName: true, agreedFreight: true, departureDate: true, arrivalDate: true } },
@@ -74,6 +101,12 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
         total: sign(c.invoice?.kind) * c.qty * c.price, note: c.note, invoiceNo: c.invoice?.no ?? null,
       });
     }
+    for (const c of m.dealCharges) {
+      revenue.push({
+        id: c.uid, name: c.chargeType.name, qty: c.qty, price: c.price,
+        total: c.qty * c.price, note: c.note, invoiceNo: c.deal?.no ?? null,
+      });
+    }
     const soleVehicle = !!m.invoice && m.invoice._count.manifests === 1;
     const unassigned: Line[] = [];
     for (const c of m.invoice?.charges ?? []) {
@@ -82,6 +115,15 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
         total: sign(m.invoice?.kind) * c.qty * c.price, note: c.note, invoiceNo: m.invoice?.no ?? null,
       };
       (soleVehicle ? revenue : unassigned).push(line);
+    }
+    // بنود عملية البيع الخارجي غير المربوطة — نفس قاعدة الفاتورة.
+    const soleDealVehicle = !!m.deal && m.deal._count.manifests === 1;
+    for (const c of m.deal?.charges ?? []) {
+      const line = {
+        id: c.uid, name: c.chargeType.name, qty: c.qty, price: c.price,
+        total: c.qty * c.price, note: c.note, invoiceNo: m.deal?.no ?? null,
+      };
+      (soleDealVehicle ? revenue : unassigned).push(line);
     }
 
     const rentLines = m.driverTrips.map((t) => ({
@@ -111,6 +153,14 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
           note: t.note, treasury: t.treasury?.name ?? null, invoiceNo: m.invoice!.no,
         }))
       : [];
+    // ناولون عملية البيع الخارجي — نفس معاملة فاتورة البيع.
+    const dealShare = m.deal ? 1 / Math.max(1, m.deal._count.manifests) : 0;
+    for (const t of m.deal?.transactions ?? []) {
+      freightLines.push({
+        id: t.uid, date: t.date, amount: ((t.cashOut || 0) - (t.cashIn || 0)) * dealShare,
+        note: t.note, treasury: t.treasury?.name ?? null, invoiceNo: m.deal!.no,
+      });
+    }
 
     const sum = (xs: { amount: number }[]) => xs.reduce((s, x) => s + x.amount, 0);
     // التحميل والشفتنة وأي بند مربوط بعربية — مجمّعين بالاسم.
@@ -138,12 +188,13 @@ export async function computeVehicleProfits(prisma: PrismaService, where: Prisma
       driverName: m.driverName,
       vehicleSource: m.vehicleSource,
       invoice: m.invoice ? { id: m.invoice.uid, no: m.invoice.no, kind: m.invoice.kind, currency: m.invoice.currency } : null,
+      deal: m.deal ? { id: m.deal.uid, no: m.deal.no } : null,
       revenue,
       revenueTotal,
       unassignedCharges: unassigned,
       rent: { total: rent, lines: rentLines },
       customs: { total: customs, lines: customsLines },
-      freight: { total: freight, lines: freightLines, shared: share < 1 },
+      freight: { total: freight, lines: freightLines, shared: (!!m.invoice && share < 1) || (!!m.deal && dealShare < 1) },
       vehicleExpenses: {
         total: vehicleCosts,
         lines: vehicleExpenses,

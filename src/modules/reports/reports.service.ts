@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Activity, InvoiceKind } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BalancesService } from '../balances/balances.service';
-import { computeVehicleProfits, FREIGHT_TX_TYPE } from '../../common/vehicle-profit';
+import { computeVehicleProfits, DEAL_FREIGHT_TX_TYPE, FREIGHT_TX_TYPE } from '../../common/vehicle-profit';
 
 // حركات المصاريف اللي بتتوزّع على النشاطين في تقريري التجارة والشحن.
 const EXPENSE_TYPES = ['مصروف', 'مصروف مخزن'];
@@ -90,6 +90,41 @@ export class ReportsService {
         byProduct.set(key, row);
       }
     }
+    // البيع الخارجي: أصنافه تجارة زي فاتورة البيع، وتكلفتها سعر الشراء من المورد (بالجنيه)
+    // + الشاي والعمولة على البند. الناولون بيتحسب هنا لو العملية مش على عربية — لو على
+    // عربية بيتخصم من ربح العربية في تقرير الشحن، فمايتحسبش مرتين.
+    // المورد الدولاري من غير سعر صرف تكلفته مش معروفة، فالعملية كلها بتطلع من التقرير
+    // بدل ما تتحسب بتكلفة صفر — وعددها بيرجع في dealsWithoutRate.
+    const deals = await this.prisma.deal.findMany({
+      where: date ? { date } : {},
+      select: {
+        exchangeRate: true,
+        supplier: { select: { currency: true } },
+        _count: { select: { manifests: true } },
+        items: { select: { qty: true, price: true, buyPrice: true, freight: true, tea: true, commission: true, product: { select: { uid: true, name: true, unit: true, service: true } } } },
+      },
+    });
+    let dealsWithoutRate = 0;
+    for (const d of deals) {
+      const goods = d.items.filter((it) => !it.product?.service);
+      if (!goods.length) continue;
+      const rate = d.supplier.currency === 'USD' ? d.exchangeRate || 0 : 1;
+      if (!(rate > 0)) { dealsWithoutRate += 1; continue; }
+      salesCount += 1;
+      for (const it of goods) {
+        const sale = it.qty * it.price;
+        const buy = it.qty * (it.buyPrice || 0) * rate;
+        const c = buy + (it.tea || 0) + (it.commission || 0) + (d._count.manifests ? 0 : it.freight || 0);
+        sales += sale;
+        purchases += buy;
+        cogs += c;
+        const key = it.product.uid;
+        const row = byProduct.get(key) ?? { name: it.product.name, unit: it.product.unit, qty: 0, sales: 0, cost: 0 };
+        row.qty += it.qty; row.sales += sale; row.cost += c;
+        byProduct.set(key, row);
+      }
+    }
+
     let salesReturns = 0, returnsCost = 0;
     for (const r of returns) {
       if (r.kind !== InvoiceKind.SALE) continue;
@@ -126,6 +161,7 @@ export class ReportsService {
       expensesByCategory: [...expByCat.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
       netProfit: grossProfit - tradeExpenses,
       purchases,
+      dealsWithoutRate,
       products: [...byProduct.entries()]
         .map(([id, v]) => ({ id, ...v, profit: v.sales - v.cost }))
         .sort((a, b) => b.sales - a.sales),
@@ -153,11 +189,17 @@ export class ReportsService {
       where: { product: { service: true }, invoice: { fake: false, ...dateWhere } },
       select: { qty: true, price: true, product: { select: { name: true } }, invoice: { select: { kind: true } } },
     });
+    // بنود الشحن على عمليات البيع الخارجي — إيراد على العميل زي فاتورة البيع.
+    const dealCharges = await this.prisma.dealCharge.findMany({
+      where: { deal: dateWhere },
+      select: { qty: true, price: true, chargeType: { select: { name: true } } },
+    });
     const incomeBy = new Map<string, number>();
     const purchaseChargesBy = new Map<string, number>();
     for (const c of [
       ...charges.map((c) => ({ name: c.chargeType.name, total: c.qty * c.price, kind: c.invoice.kind })),
       ...legacy.map((l) => ({ name: l.product.name, total: l.qty * l.price, kind: l.invoice.kind })),
+      ...dealCharges.map((c) => ({ name: c.chargeType.name, total: c.qty * c.price, kind: InvoiceKind.SALE })),
     ]) {
       const m = c.kind === InvoiceKind.SALE ? incomeBy : purchaseChargesBy;
       m.set(c.name, (m.get(c.name) ?? 0) + c.total);
@@ -176,7 +218,13 @@ export class ReportsService {
       where: { type: FREIGHT_TX_TYPE, invoice: { kind: InvoiceKind.SALE, fake: false, manifests: { some: {} } }, ...dateWhere },
       _sum: { cashOut: true, cashIn: true },
     });
-    const invoiceFreight = (freightAgg._sum.cashOut || 0) - (freightAgg._sum.cashIn || 0);
+    // + ناولون عمليات البيع الخارجي المربوطة بعربية — نفس المعاملة.
+    const dealFreightAgg = await this.prisma.transaction.aggregate({
+      where: { type: DEAL_FREIGHT_TX_TYPE, deal: { manifests: { some: {} } }, ...dateWhere },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    const invoiceFreight = (freightAgg._sum.cashOut || 0) - (freightAgg._sum.cashIn || 0)
+      + (dealFreightAgg._sum.cashOut || 0) - (dealFreightAgg._sum.cashIn || 0);
 
     const trips = await this.prisma.driverTrip.aggregate({
       where: date ? { departureDate: date } : {},
@@ -243,6 +291,7 @@ export class ReportsService {
       id: r.id, no: r.no, date: r.date, clientName: r.clientName,
       vehicleNo: r.vehicleNo, trailerNo: r.trailerNo, vehicleLabel: r.vehicleLabel, driverName: r.driverName,
       invoice: r.invoice,
+      deal: r.deal,
       revenue: r.revenueTotal,
       rent: r.rent.total,
       customs: r.customs.total,

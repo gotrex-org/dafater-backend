@@ -180,7 +180,7 @@ export class AuditService {
   }
 
   private restoreDeal(snap: any) {
-    const { items = [], transactions: txns = [], id: _id, createdAt: _c, updatedAt: _u, ...deal } = snap;
+    const { items = [], charges = [], transactions: txns = [], id: _id, createdAt: _c, updatedAt: _u, ...deal } = snap;
     return this.prisma.deal.create({
       data: {
         uid: deal.uid,
@@ -193,6 +193,7 @@ export class AuditService {
         nawlon: deal.nawlon ?? 0,
         treasuryId: deal.treasuryId ?? null,
         note: deal.note ?? null,
+        exchangeRate: deal.exchangeRate ?? null,
         items: {
           createMany: {
             data: items.map((it: any) => ({
@@ -200,6 +201,19 @@ export class AuditService {
               productId: it.productId,
               qty: it.qty,
               price: it.price,
+              buyPrice: it.buyPrice ?? 0,
+            })),
+          },
+        },
+        // بنود الشحن — الكشف المربوط ممكن يكون اتمسح، فالربط بالعربية مش بيرجع.
+        charges: {
+          createMany: {
+            data: charges.map((c: any) => ({
+              uid: c.uid,
+              chargeTypeId: c.chargeTypeId,
+              qty: c.qty ?? 1,
+              price: c.price,
+              note: c.note ?? null,
             })),
           },
         },

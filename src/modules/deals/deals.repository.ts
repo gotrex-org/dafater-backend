@@ -1,11 +1,18 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
+import { INVOICE_CHARGES_TX_TYPE } from '../../common/activity';
 import { CreateDealDto, DealCommissionDto } from './dto/deals.dto';
 
-const DEAL_INCLUDE = { client: true, supplier: true, treasury: true, items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } } } as const;
+const DEAL_INCLUDE = {
+  client: true, supplier: true, treasury: true,
+  items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } },
+  charges: { orderBy: { id: 'asc' }, include: { chargeType: { select: { uid: true, name: true } }, manifest: { select: { uid: true, no: true } } } },
+  manifests: { select: { uid: true, no: true, date: true, vehicleNo: true, driverName: true }, orderBy: { date: 'asc' } },
+  driverTrip: { select: { uid: true, driverName: true, departureDate: true } },
+} as const;
 
 @Injectable()
 export class DealsRepository {
@@ -35,19 +42,19 @@ export class DealsRepository {
     const run = () => this.prisma.$transaction(async (tx) => {
       const { client, supplier, treasury, commissionParty, no } = await this.resolve(tx, dto, null);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildDealItems(tx, dto.items);
-      const { date, paidIn, paidOut, nawlon } = this.amounts(dto);
-      const sellTotal = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
-      const buyTotal  = dto.items.reduce((s, it) => s + it.qty * (it.buyPrice || 0), 0);
+      const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
+      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto, supplier);
 
       const deal = await tx.deal.create({
         data: {
           no, date, clientId: client.id, supplierId: supplier.id,
-          paidIn, paidOut, nawlon, treasuryId: treasury?.id ?? null, note: dto.note,
+          paidIn, paidOut, nawlon, treasuryId: treasury?.id ?? null, note: dto.note, exchangeRate,
           items: { create: itemsCreate },
+          charges: { create: chargesCreate },
         },
       });
 
-      await tx.transaction.createMany({ data: this.txns(deal.id, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
+      await tx.transaction.createMany({ data: this.txns(deal.id, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, chargesTotal, chargeNames, exchangeRate, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
       return tx.deal.findUnique({ where: { id: deal.id }, include: DEAL_INCLUDE });
     });
 
@@ -68,9 +75,8 @@ export class DealsRepository {
     return this.prisma.$transaction(async (tx) => {
       const { client, supplier, treasury, commissionParty, no } = await this.resolve(tx, dto, existing.no);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildDealItems(tx, dto.items);
-      const { date, paidIn, paidOut, nawlon } = this.amounts(dto);
-      const sellTotal = dto.items.reduce((s, it) => s + it.qty * it.price, 0);
-      const buyTotal  = dto.items.reduce((s, it) => s + it.qty * (it.buyPrice || 0), 0);
+      const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
+      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto, supplier);
 
       // عمولة الصفقة على مستوى العملية (اللي اتسجّلت من شاشة الصفقات updateCommission) ليها بيان
       // "commission صفقة" — نحفظها قبل المسح ونعيد ترحيلها، وإلا تعديل الصفقة كان بيلغيها.
@@ -86,12 +92,13 @@ export class DealsRepository {
         where: { id: dealId },
         data: {
           no, date, clientId: client.id, supplierId: supplier.id,
-          paidIn, paidOut, nawlon, treasuryId: treasury?.id ?? null, note: dto.note,
+          paidIn, paidOut, nawlon, treasuryId: treasury?.id ?? null, note: dto.note, exchangeRate,
           items: { create: itemsCreate },
+          charges: { deleteMany: {}, create: chargesCreate },
         },
       });
 
-      await tx.transaction.createMany({ data: this.txns(dealId, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
+      await tx.transaction.createMany({ data: this.txns(dealId, { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, chargesTotal, chargeNames, exchangeRate, paidIn, paidOut, nawlon, dto, items: resolvedItems, createdById }) });
 
       // إعادة ترحيل عمولة العملية المحفوظة لو الـ dto ماجابش عمولة جديدة (txns بتعيد بناء عمولة الـ dto لو موجودة).
       if (prevComm?.partyId && prevComm.credit && !(dto.commissionAmount && dto.commissionAmount > 0)) {
@@ -130,9 +137,12 @@ export class DealsRepository {
   }
 
   private async resolve(tx: Prisma.TransactionClient, dto: CreateDealDto, fallbackNo: string | null) {
+    if (!dto.items.length && !(dto.charges ?? []).some((c) => (c.qty ?? 1) * c.price !== 0)) {
+      throw new BadRequestException('أضف صنفاً أو بند شحن واحداً على الأقل');
+    }
     const [client, supplier, treasury] = await Promise.all([
       tx.party.findUniqueOrThrow({ where: { uid: dto.clientId }, select: { id: true } }),
-      tx.party.findUniqueOrThrow({ where: { uid: dto.supplierId }, select: { id: true } }),
+      tx.party.findUniqueOrThrow({ where: { uid: dto.supplierId }, select: { id: true, currency: true } }),
       dto.treasuryId
         ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
         : Promise.resolve(null),
@@ -190,8 +200,48 @@ export class DealsRepository {
     return { create, resolved };
   }
 
-  private amounts(dto: CreateDealDto) {
-    return { date: new Date(dto.date), paidIn: dto.paidIn || 0, paidOut: dto.paidOut || 0, nawlon: dto.nawlon || 0 };
+  private amounts(dto: CreateDealDto, supplier: { currency: string }) {
+    const chargesTotal = (dto.charges ?? []).reduce((s, c) => s + (c.qty ?? 1) * c.price, 0);
+    return {
+      date: new Date(dto.date), paidIn: dto.paidIn || 0, paidOut: dto.paidOut || 0, nawlon: dto.nawlon || 0,
+      sellTotal: dto.items.reduce((s, it) => s + it.qty * it.price, 0),
+      buyTotal: dto.items.reduce((s, it) => s + it.qty * (it.buyPrice || 0), 0),
+      chargesTotal,
+      // سعر الصرف بيتحفظ بس لما المورد دولاري — المورد بالمصري مالوش سعر صرف.
+      exchangeRate: supplier.currency === 'USD' && dto.exchangeRate && dto.exchangeRate > 0 ? dto.exchangeRate : null,
+    };
+  }
+
+  // بنود الشحن: نفس بناء بنود الفاتورة (uid البند والعربية → ids)، والأسماء لبيان الحركة.
+  private async buildCharges(tx: Prisma.TransactionClient, charges: CreateDealDto['charges']) {
+    const list = (charges ?? []).filter((c) => c.chargeTypeId && (c.qty ?? 1) * c.price !== 0);
+    if (!list.length) return { create: [] as Prisma.DealChargeCreateWithoutDealInput[], names: [] as string[] };
+    const typeUids = [...new Set(list.map((c) => c.chargeTypeId))];
+    const manUids = [...new Set(list.map((c) => c.manifestId).filter(Boolean) as string[])];
+    const [types, manifests] = await Promise.all([
+      tx.chargeType.findMany({ where: { uid: { in: typeUids } }, select: { id: true, uid: true, name: true } }),
+      manUids.length
+        ? tx.manifest.findMany({ where: { uid: { in: manUids } }, select: { id: true, uid: true } })
+        : Promise.resolve([] as { id: number; uid: string }[]),
+    ]);
+    const tByUid = new Map(types.map((t) => [t.uid, t]));
+    const mByUid = new Map(manifests.map((m) => [m.uid, m.id]));
+    const create: Prisma.DealChargeCreateWithoutDealInput[] = [];
+    const names: string[] = [];
+    for (const c of list) {
+      const t = tByUid.get(c.chargeTypeId);
+      if (!t) throw new NotFoundException('بند الشحن غير موجود');
+      const manifestId = c.manifestId ? mByUid.get(c.manifestId) : undefined;
+      create.push({
+        chargeType: { connect: { id: t.id } },
+        qty: c.qty ?? 1,
+        price: c.price,
+        note: c.note?.trim() || null,
+        ...(manifestId ? { manifest: { connect: { id: manifestId } } } : {}),
+      });
+      if (!names.includes(t.name)) names.push(t.name);
+    }
+    return { create, names };
   }
 
   private async nextNo(tx: Prisma.TransactionClient, clientId?: number): Promise<string> {
@@ -209,16 +259,24 @@ export class DealsRepository {
     p: {
       client: { id: number }; supplier: { id: number }; treasury: { id: number } | null;
       commissionParty: { id: number } | null; date: Date; no: string;
-      sellTotal: number; buyTotal: number; paidIn: number; paidOut: number; nawlon: number;
+      sellTotal: number; buyTotal: number; chargesTotal: number; chargeNames: string[]; exchangeRate: number | null;
+      paidIn: number; paidOut: number; nawlon: number;
       items: { freight: number; tea: number; commission: number; commissionPartyId: number | null; freightTreasuryId: number | null; freightNote: string | null; teaTreasuryId: number | null; teaNote: string | null }[];
       dto: CreateDealDto; createdById?: number;
     },
   ): Prisma.TransactionCreateManyInput[] {
-    const { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, paidIn, paidOut, nawlon, items, dto, createdById } = p;
-    const txns: Prisma.TransactionCreateManyInput[] = [
-      { date, type: 'بيع خارجي', partyId: client.id, debit: sellTotal, note: `بيع خارجي #${no}`, dealId },
-      { date, type: 'شراء خارجي', partyId: supplier.id, credit: buyTotal, note: `شراء خارجي #${no}`, dealId },
-    ];
+    const { client, supplier, treasury, commissionParty, date, no, sellTotal, buyTotal, chargesTotal, chargeNames, exchangeRate, paidIn, paidOut, nawlon, items, dto, createdById } = p;
+    // زي الفاتورة: العميل عليه رجلين بنشاطين — الأصناف (تجارة) وبنود الشحن (شحن).
+    // رجل الأصناف بتتكتب دايماً إلا لو العملية بنود شحن بس، عشان العمليات القديمة
+    // تفضل حركاتها زي ما هي بالظبط.
+    const writeTrade = sellTotal !== 0 || chargesTotal === 0;
+    const writeBuy = buyTotal !== 0 || chargesTotal === 0;
+    // سعر الصرف على حركة المورد الدولاري — عشان متوسط سعر صرفه يتحسب صح.
+    const usd = exchangeRate ? { exchangeRate } : {};
+    const txns: Prisma.TransactionCreateManyInput[] = [];
+    if (writeTrade) txns.push({ date, type: 'بيع خارجي', partyId: client.id, debit: sellTotal, note: `بيع خارجي #${no}`, dealId, activity: 'TRADE' });
+    if (chargesTotal !== 0) txns.push({ date, type: INVOICE_CHARGES_TX_TYPE, partyId: client.id, debit: chargesTotal, note: `بنود شحن بيع خارجي #${no}${chargeNames.length ? ` (${chargeNames.join('، ')})` : ''}`, dealId, activity: 'SHIPPING' });
+    if (writeBuy) txns.push({ date, type: 'شراء خارجي', partyId: supplier.id, credit: buyTotal, note: `شراء خارجي #${no}`, dealId, activity: 'TRADE', ...usd });
     if (paidIn > 0) txns.push({ date, type: 'تحصيل', partyId: client.id, treasuryId: treasury?.id ?? null, credit: paidIn, cashIn: paidIn, dealId });
     if (paidOut > 0) txns.push({ date, type: 'دفعة لمورد', partyId: supplier.id, treasuryId: treasury?.id ?? null, debit: paidOut, cashOut: paidOut, dealId });
     if (dto.commissionAmount && dto.commissionAmount > 0 && commissionParty) txns.push({ date, type: 'commission', partyId: commissionParty.id, credit: dto.commissionAmount, note: `commission صفقة #${no}`, dealId });

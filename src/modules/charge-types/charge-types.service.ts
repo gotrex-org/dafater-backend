@@ -48,9 +48,9 @@ export class ChargeTypesService {
 
   /** حذف — البند المستخدم في فواتير يتأرشف بدل الحذف، لأن الفواتير القديمة تشير إليه. */
   async remove(uid: string) {
-    const ct = await this.prisma.chargeType.findUnique({ where: { uid }, include: { _count: { select: { charges: true } } } });
+    const ct = await this.prisma.chargeType.findUnique({ where: { uid }, include: { _count: { select: { charges: true, dealCharges: true } } } });
     if (!ct) throw new NotFoundException('البند غير موجود');
-    if (ct._count.charges > 0) {
+    if (ct._count.charges + ct._count.dealCharges > 0) {
       await this.prisma.chargeType.update({ where: { id: ct.id }, data: { hidden: true } });
       return { ok: true, archived: true };
     }

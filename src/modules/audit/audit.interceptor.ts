@@ -171,7 +171,7 @@ const DELETE_FETCH: Record<
     return txn.groupId ? p.transaction.findMany({ where: { groupId: txn.groupId }, include }) : [txn];
   },
   invoices:             (p, uid) => p.invoice.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, party: { select: { name: true } }, warehouse: { select: { name: true } }, treasury: { select: { name: true } } } }),
-  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, transactions: true, client: { select: { name: true } }, supplier: { select: { name: true } }, treasury: { select: { name: true } } } }),
+  deals:                (p, uid) => p.deal.findUnique({ where: { uid }, include: { items: { include: { product: { select: { name: true } } } }, charges: true, transactions: true, client: { select: { name: true } }, supplier: { select: { name: true } }, treasury: { select: { name: true } } } }),
   manifests:            (p, uid) => p.manifest.findUnique({ where: { uid }, include: { items: true } }),
   'driver-trips':       (p, uid) => p.driverTrip.findUnique({ where: { uid }, include: { payments: true } }),
   parties:              (p, uid) => p.party.findUnique({ where: { uid }, include: { transactions: true, requests: { include: { items: true } } } }),

@@ -64,7 +64,18 @@ export class PartiesRepository {
             charges: { select: { qty: true, price: true, chargeType: { select: { name: true } } } },
           },
         },
-        deal: { select: { uid: true, items: { select: { qty: true, price: true, buyPrice: true, product: { select: { name: true } } } } } },
+        deal: {
+          select: {
+            uid: true,
+            items: { select: { qty: true, price: true, buyPrice: true, product: { select: { name: true } } } },
+            charges: { select: { qty: true, price: true, chargeType: { select: { name: true } } } },
+            manifests: {
+              select: { date: true, no: true, driverTrips: { select: { arrivalDate: true } } },
+              orderBy: { date: 'asc' },
+              take: 1,
+            },
+          },
+        },
       },
     });
   }

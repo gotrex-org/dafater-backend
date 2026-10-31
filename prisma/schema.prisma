@@ -577,6 +577,7 @@ model ChargeType {
   // أرشفة بدل الحذف لو البند مستخدم — الفواتير القديمة بتشاور عليه.
   hidden    Boolean         @default(false)
   charges   InvoiceCharge[]
+  dealCharges DealCharge[]
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
 }
@@ -729,14 +730,43 @@ model Deal {
 
   note String?
 
+  // سعر صرف الدولار وقت العملية لما المورد دولاري — سعر الشراء بالدولار والبيع بالجنيه،
+  // فتقرير التجارة محتاجه عشان يحوّل تكلفة الشراء لجنيه.
+  exchangeRate Float?
+
   items        DealItem[]
+  // بنود الشحن (نولون/تحميل/شفتنة…) على العميل — زي InvoiceCharge بالظبط.
+  charges      DealCharge[]
   transactions Transaction[]
+  // كشوفات العربيات المربوطة بالعملية — زي Manifest.invoiceId
+  manifests    Manifest[]
+  // رحلة السواق المربوطة بالعملية (واحد لواحد) — شوف DriverTrip.dealId
+  driverTrip   DriverTrip? @relation("TripDeal")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // رقم عملية فريد لكل عميل — يمنع تكرار الرقم من تسابق nextNo.
   @@unique([clientId, no])
+}
+
+// بند شحن على عملية بيع خارجي — نفس InvoiceCharge، ولا يؤثر على المخزون.
+model DealCharge {
+  id           Int        @id @default(autoincrement())
+  uid          String     @unique @default(cuid())
+  deal         Deal       @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId       Int
+  chargeType   ChargeType @relation(fields: [chargeTypeId], references: [id], onDelete: Restrict)
+  chargeTypeId Int
+  qty          Float      @default(1)
+  price        Float
+  note         String?
+  // العربية اللي البند ده إيرادها — نفس منطق InvoiceCharge.manifestId
+  manifest     Manifest?  @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId   Int?
+
+  @@index([dealId])
+  @@index([manifestId])
 }
 
 model DealItem {
@@ -825,6 +855,9 @@ model Manifest {
   date        DateTime
   invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   invoiceId   Int?
+  // أو عملية بيع خارجي بدل الفاتورة — الكشف بيتربط بواحد منهم بس.
+  deal        Deal?    @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  dealId      Int?
   clientName  String
   vehicleNo   String?
   // مسمّى العربية (عربية الزيتون / عربية ديدي) — اسم متعارف عليه غير رقم اللوحة واسم السائق
@@ -855,8 +888,10 @@ model Manifest {
   driverTrips  DriverTrip[]
   transactions Transaction[]
   charges      InvoiceCharge[]
+  dealCharges  DealCharge[]
 
   @@index([clearingAgentId])
+  @@index([dealId])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -905,6 +940,9 @@ model DriverTrip {
   // (رحلة ← كشف عربية ← فاتورة) مش مليانة في الداتا القديمة.
   invoice       Invoice?  @relation("TripInvoice", fields: [invoiceId], references: [id], onDelete: SetNull)
   invoiceId     Int?      @unique
+  // أو عملية بيع خارجي بدل الفاتورة — واحد منهم بس، ونفس قاعدة رحلة واحدة = عملية واحدة.
+  deal          Deal?     @relation("TripDeal", fields: [dealId], references: [id], onDelete: SetNull)
+  dealId        Int?      @unique
 
   driverName    String
   vehicleNo     String?
