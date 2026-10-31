@@ -5,6 +5,7 @@ import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateManifestDto, UpdateManifestDto } from './dto/manifests.dto';
 import { ManifestsRepository } from './manifests.repository';
 import { DriversService } from '../drivers/drivers.service';
+import { syncManifestTrips } from '../../common/manifest-trip-sync';
 
 @Injectable()
 export class ManifestsService {
@@ -79,9 +80,16 @@ export class ManifestsService {
     return { no: await this.repo.nextNoForClient(clientName) };
   }
 
-  update(id: string, dto: UpdateManifestDto) {
+  async update(id: string, dto: UpdateManifestDto) {
     if (dto.invoiceId && dto.dealId) throw new BadRequestException('اربط الكشف بفاتورة أو بعملية بيع خارجي، وليس الاثنين');
-    return this.repo.update(id, dto);
+    const touchesDoc = dto.invoiceId !== undefined || dto.dealId !== undefined;
+    const prev = touchesDoc
+      ? await this.prisma.manifest.findUnique({ where: { uid: id }, select: { invoiceId: true, dealId: true } })
+      : null;
+    const manifest = await this.repo.update(id, dto);
+    // رحلة السائق بتتربط/تتفك مع فاتورة كشف عربيتها
+    if (touchesDoc) await syncManifestTrips(this.prisma, manifest.id, prev ?? undefined);
+    return manifest;
   }
   remove(id: string) { return this.repo.remove(id); }
 }

@@ -3,6 +3,8 @@ import { AddPaymentDto, CreateDriverTripDto, PatchWeightDiffDto, SetArrivalDto, 
 import { DriverTripsRepository } from './driver-trips.repository';
 import { DriversService } from '../drivers/drivers.service';
 import { AppConfigService } from '../config/config.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { syncManifestTrips } from '../../common/manifest-trip-sync';
 
 function daysBetween(from: Date, to: Date): number {
   return Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
@@ -31,6 +33,7 @@ export class DriverTripsService {
     private repo: DriverTripsRepository,
     private driversService: DriversService,
     private configService: AppConfigService,
+    private prisma: PrismaService,
   ) {}
 
   async create(dto: CreateDriverTripDto) {
@@ -109,6 +112,9 @@ export class DriverTripsService {
         } : undefined,
       );
     }
+
+    // الرحلة بتاخد فاتورة كشف عربيتها تلقائياً
+    if (manifestId) await syncManifestTrips(this.prisma, manifestId);
 
     return this.findOne(trip.uid);
   }
@@ -226,7 +232,7 @@ export class DriverTripsService {
         partyId = p?.id ?? null;
       }
     }
-    return this.repo.update(uid, {
+    const updated = await this.repo.update(uid, {
       ...(dto.driverName !== undefined ? { driverName: dto.driverName.trim() } : {}),
       ...(dto.vehicleNo !== undefined ? { vehicleNo: dto.vehicleNo.trim() || null } : {}),
       ...(dto.vehicleLabel !== undefined ? { vehicleLabel: dto.vehicleLabel.trim() || null } : {}),
@@ -238,6 +244,9 @@ export class DriverTripsService {
       ...(partyId !== undefined ? { partyId } : {}),
       ...(manifestId !== undefined ? { manifestId } : {}),
     });
+    // ربط الرحلة بكشف عربية بيربطها بفاتورة الكشف تلقائياً
+    if (manifestId) await syncManifestTrips(this.prisma, manifestId);
+    return updated;
   }
 
   async addPayment(uid: string, dto: AddPaymentDto) {
