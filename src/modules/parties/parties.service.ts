@@ -90,7 +90,7 @@ export class PartiesService {
     const lastRate = fifo
       ? Math.max(...partyIds.map((pid) => fifo.byParty.get(pid)?.lastRate ?? 0), 0)
       : 0;
-    const openEgp = (p: any) => (Number(p?.opening) || 0) * (p?.currency === 'USD' ? lastRate : 1);
+    const openEgp = (p: any) => (Number(p?.opening) || 0) * (p?.currency === 'USD' ? (fifo?.byParty.get(p.id)?.openingRate ?? lastRate) : 1);
     let runningEgp = openEgp(party) + (partner ? openEgp(partner) : 0);
     let periodOpeningEgp = runningEgp;
     const egpOf = (t: { id: number; partyId: number | null; debit: number; credit: number }) => {

@@ -7,6 +7,8 @@
 //    بين الدفعة والفاتورة.
 //  • الجزء من الفاتورة اللي لم تقابله شريحة بعد = «غير مسعّر»: لا يدخل تكلفة البضاعة،
 //    ويتسعّر تلقائياً بالسعر الحقيقي أول ما الوكيل يورّد. الميزان وحده يقرّبه بآخر سعر.
+//  • شريحة دولار بدون سعر خاص بها تُقيَّم بسعر الوكيل في تاريخها، لا بآخر سعر. فسعر
+//    جديد من الوكيل لا يغيّر قيمة الحركات السابقة. الرصيد الافتتاحي بأقدم سعر معروف.
 //
 // لا شيء من هذا مخزّن — يُعاد حسابه من حركات Transaction في كل قراءة، فتعديل أو حذف
 // دفعة أو فاتورة ينعكس على الفور على كل الفواتير اللاحقة.
@@ -22,7 +24,11 @@ export type FifoTx = {
   cashOut: number;
   exchangeRate: number;
   invoiceId: number | null;
+  /** سعر حركة الوكيل (USD_OUT) المرتبطة بهذا السطر — المصدر الأصلي للسعر */
+  agentRate?: number;
 };
+
+export type AgentRate = { date: Date; rate: number };
 
 export type FifoTxResult = {
   usd: number;
@@ -40,6 +46,7 @@ export type FifoPartyResult = {
   egpBalance: number;    // الشرائح المتبقية بسعرها − غير المسعّر × آخر سعر (تقريبي)
   unpricedUsd: number;
   lastRate: number;
+  openingRate: number;   // سعر الرصيد الافتتاحي: أقدم سعر معروف
 };
 
 export type FifoResult = {
@@ -48,20 +55,39 @@ export type FifoResult = {
   byParty: Map<number, FifoPartyResult>;
 };
 
-// سعر شريحة مدينة: سعر الصرف المختوم عليها، وإلا نسبة الجنيه الخارج من الخزنة للدولار.
+const EPS = 1e-9;
+
+// سعر شريحة مدينة: سعر حركة الوكيل، ثم السعر المختوم عليها، ثم نسبة الجنيه الخارج من
+// الخزنة للدولار. نسبة 1 معناها إن المبلغ الخارج مسجّل بالدولار نفسه (مدفوع مع فاتورة
+// دولار)، فلا تحمل سعراً.
 function debitRate(t: FifoTx): number | null {
+  if (t.agentRate && t.agentRate > 0) return t.agentRate;
   if (t.exchangeRate > 0) return t.exchangeRate;
-  if (t.cashOut > 0 && t.debit > 0) return t.cashOut / t.debit;
+  if (t.cashOut > 0 && t.debit > 0 && Math.abs(t.cashOut / t.debit - 1) > EPS) return t.cashOut / t.debit;
   return null;
 }
-
-const EPS = 1e-9;
 
 export function computeUsdFifo(
   parties: { id: number; opening: number }[],
   txs: FifoTx[],
-  globalLastRate = 0,
+  agentRates: AgentRate[] = [],
 ): FifoResult {
+  const rates = agentRates
+    .filter((r) => r.rate > 0)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+  const globalLastRate = rates.length ? rates[rates.length - 1].rate : 0;
+  // سعر الوكيل في تاريخ معيّن: آخر سعر حتى التاريخ، وقبل أول سعر يؤخذ أول سعر.
+  const rateAt = (date: Date): number | null => {
+    if (!rates.length) return null;
+    let found = rates[0].rate;
+    for (const r of rates) {
+      if (r.date.getTime() > date.getTime()) break;
+      found = r.rate;
+    }
+    return found;
+  };
+  const earliestRate = rates.length ? rates[0].rate : null;
+
   const byTx = new Map<number, FifoTxResult>();
   const byInvoice = new Map<number, FifoInvoiceResult>();
   const byParty = new Map<number, FifoPartyResult>();
@@ -91,7 +117,7 @@ export function computeUsdFifo(
     const supply: Layer[] = [];
     const demand: { txId: number | null; usd: number }[] = [];
     const opening = Number(p.opening) || 0;
-    if (opening > 0) supply.push({ txId: null, left: opening, rate: null });
+    if (opening > 0) supply.push({ txId: null, left: opening, rate: earliestRate });
     if (opening < 0) demand.push({ txId: null, usd: -opening });
 
     let usdBalance = opening;
@@ -100,9 +126,9 @@ export function computeUsdFifo(
       const c = Number(t.credit) || 0;
       usdBalance += d - c;
       if (d > 0) {
-        const rate = debitRate(t);
+        // شريحة بدون سعر خاص (مرتجع، مدفوع مع فاتورة) تُقيَّم بسعر الوكيل في تاريخها.
+        const rate = debitRate(t) ?? rateAt(t.date);
         supply.push({ txId: t.id, left: d, rate });
-        // شريحة بدون سعر (افتتاحي/مرتجع) تُقدَّر بآخر سعر.
         const r = rate ?? lastRate;
         byTx.set(t.id, { usd: d, egp: d * r, pricedUsd: rate ? d : 0, unpricedUsd: 0, rate: rate ?? 0, side: 'debit' });
       }
@@ -142,6 +168,7 @@ export function computeUsdFifo(
       egpBalance: leftoverEgp - unpricedTotal * lastRate,
       unpricedUsd: unpricedTotal,
       lastRate,
+      openingRate: earliestRate ?? lastRate,
     });
 
     // تجميع أرجل كل فاتورة (الأصناف + بنود الشحن) على نفس جانبها.

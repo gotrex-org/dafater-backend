@@ -62,8 +62,8 @@ export class InvoicesRepository {
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
       const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
 
-      // Exchange rate only meaningful on a USD (dollar) party's invoice.
-      const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
+      // سعر الدولار يُكتب على فاتورة البيع فقط. فاتورة الشراء تتسعّر من دفعات الوكيل (FIFO).
+      const rate = party.currency === 'USD' && dto.kind === InvoiceKind.SALE ? (dto.exchangeRate || null) : null;
       const invoice = await tx.invoice.create({
         data: {
           kind: dto.kind,
@@ -125,7 +125,8 @@ export class InvoicesRepository {
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
 
-      const rate = party.currency === 'USD' ? (dto.exchangeRate || null) : null;
+      // فاتورة الشراء تتسعّر من دفعات الوكيل (FIFO)، فلا تحمل سعراً خاصاً بها.
+      const rate = party.currency === 'USD' && isSale ? (dto.exchangeRate || null) : null;
       await tx.invoice.update({
         where: { id: invId },
         data: {

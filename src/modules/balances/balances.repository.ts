@@ -38,19 +38,22 @@ export class BalancesRepository {
         cashIn: true, cashOut: true, exchangeRate: true, invoiceId: true,
       },
     });
-    // آخر سعر توريد من أي وكيل — تقريب لمورد بدون أي دفعة بعد.
-    const last = await this.prisma.dollarAgentTx.findFirst({
+    // كل أسعار توريد الوكلاء بتواريخها: الحركة المربوطة تأخذ سعرها، والحركة بدون سعر
+    // تأخذ سعر الوكيل في تاريخها.
+    const agentTxs = await this.prisma.dollarAgentTx.findMany({
       where: { type: 'USD_OUT', exchangeRate: { gt: 0 } },
-      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      select: { exchangeRate: true },
+      orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+      select: { date: true, exchangeRate: true, txId: true },
     });
+    const rateByTx = new Map(agentTxs.filter((a) => a.txId != null).map((a) => [a.txId!, a.exchangeRate]));
     return computeUsdFifo(
       parties.map((p) => ({ id: p.id, opening: Number(p.opening) || 0 })),
       txs.map((t) => ({
         ...t, partyId: t.partyId!, debit: Number(t.debit) || 0, credit: Number(t.credit) || 0,
         cashIn: Number(t.cashIn) || 0, cashOut: Number(t.cashOut) || 0, exchangeRate: Number(t.exchangeRate) || 0,
+        agentRate: rateByTx.get(t.id),
       })),
-      last?.exchangeRate ?? 0,
+      agentTxs.map((a) => ({ date: a.date, rate: a.exchangeRate })),
     );
   }
 
