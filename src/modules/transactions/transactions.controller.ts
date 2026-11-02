@@ -4,11 +4,13 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { PostEntryDto, ResolveDto, UpdateTransactionDto } from './dto/transactions.dto';
 import { TransactionsService } from './transactions.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { syncPairedPartyLeg } from '../../common/transfer-sync';
 
 @Controller('transactions')
 @Permissions('entry', 'treasury', 'ledger')
 export class TransactionsController {
-  constructor(private service: TransactionsService) {}
+  constructor(private service: TransactionsService, private prisma: PrismaService) {}
 
   @Get()
   list(@Query() q: PaginationQueryDto, @CurrentUser() user: any) {
@@ -34,8 +36,11 @@ export class TransactionsController {
 
   @Patch(':id')
   @Permissions('entry')
-  update(@Param('id') id: string, @Body() dto: UpdateTransactionDto, @CurrentUser() user: any) {
-    return this.service.update(id, dto, user);
+  async update(@Param('id') id: string, @Body() dto: UpdateTransactionDto, @CurrentUser() user: any) {
+    const updated = await this.service.update(id, dto, user);
+    // تحويل بين أطراف: التعديل من كشف أي طرف يسمع في كشف الطرف التاني
+    await syncPairedPartyLeg(this.prisma, id);
+    return updated;
   }
 
   @Delete(':id')
