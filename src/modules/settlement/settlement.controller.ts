@@ -6,7 +6,7 @@ import { Requester, SettlementService } from './settlement.service';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
   SetItemWeekDto, UpdatePartnerVehicleDto, UpdatePriceListDto,
-  CapitalMovementDto, FixedRateDto, PartnerPaymentDto,
+  CapitalMovementDto, FixedRateDto, PartnerPaymentDto, SelectItemsDto,
 } from './dto/settlement.dto';
 
 /**
@@ -18,7 +18,7 @@ import {
  * الفواتير ورأس المال والمبلغ للوحدة وأسبوع الصنف والأسماء نفسها للأدمن بس.
  *
  * وكمان: اللي مش أدمن بيشوف التصفية المربوطة بحسابه بس — مش كل الأسماء.
- * وفي التصفية الثابتة صاحب الاسم بيضيف فواتير الشراء بنفسه (candidates / vehicles)،
+ * وفي التصفية الثابتة صاحب الاسم بيختار الأصناف من فواتير الشراء بنفسه (items)،
  * وبتستنى موافقة المالك اللي بتحصل بكتابة المبلغ للوحدة أو النسبة.
  *
  * مفيش endpoint لحذف قايمة أسعار بالقصد: الحسابات القديمة بتقرا من القوايم
@@ -121,22 +121,51 @@ export class SettlementController {
 
   // ---------------------------- التصفية الثابتة ----------------------------
 
-  /** فواتير الشراء المختارة ومستحق كل واحدة. */
+  /** الأصناف المختارة من فواتير الشراء ومستحق كل صنف. */
   @Get(':partnerId/fixed')
   fixed(@Param('partnerId') partnerId: string, @CurrentUser() me: Requester) {
     return this.service.fixedList(partnerId, me);
   }
 
-  /** كتابة المبلغ للوحدة أو النسبة على فاتورة شراء مختارة — وهي الموافقة عليها. */
-  @Put(':partnerId/fixed/:invoiceId')
-  @AdminOnly()
-  setFixedRate(
+  /** «اختيار الأصناف»: فواتير الشراء اللي فيها الصنف المكتوب، في الفترة. */
+  @Get(':partnerId/items/search')
+  searchItems(
+    @Param('partnerId') partnerId: string,
+    @CurrentUser() me: Requester,
+    @Query('q') q: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.service.searchItems(partnerId, q, from, to, me);
+  }
+
+  /** صاحب الاسم يضيف بانتظار الموافقة، والمالك يضيف موافقاً عليه. */
+  @Post(':partnerId/items')
+  addItems(@Param('partnerId') partnerId: string, @Body() dto: SelectItemsDto, @CurrentUser() me: Requester) {
+    return this.service.addItems(partnerId, dto, me);
+  }
+
+  @Delete(':partnerId/items/:invoiceId/:productId')
+  removeItem(
     @Param('partnerId') partnerId: string,
     @Param('invoiceId') invoiceId: string,
+    @Param('productId') productId: string,
+    @CurrentUser() me: Requester,
+  ) {
+    return this.service.removeItem(partnerId, invoiceId, productId, me);
+  }
+
+  /** كتابة المبلغ للوحدة أو النسبة على صنف مختار — وهي الموافقة عليه. */
+  @Put(':partnerId/items/:invoiceId/:productId')
+  @AdminOnly()
+  setItemRate(
+    @Param('partnerId') partnerId: string,
+    @Param('invoiceId') invoiceId: string,
+    @Param('productId') productId: string,
     @Body() dto: FixedRateDto,
     @CurrentUser() me: Requester,
   ) {
-    return this.service.setFixedRate(partnerId, invoiceId, dto, me);
+    return this.service.setItemRate(partnerId, invoiceId, productId, dto, me);
   }
 
   // ------------------------------ كشف الحساب ------------------------------
@@ -179,8 +208,9 @@ export class SettlementController {
     return this.service.overview(partnerId, me);
   }
 
-  /** الفواتير المرشّحة للاختيار. صاحب الاسم يراها في التصفية الثابتة ليضيف منها. */
+  /** فواتير البيع المرشّحة للتصفية برأس المال — للاختيار. */
   @Get(':partnerId/candidates')
+  @AdminOnly()
   candidates(@Param('partnerId') partnerId: string, @CurrentUser() me: Requester) {
     return this.service.candidates(partnerId, me);
   }
@@ -195,6 +225,7 @@ export class SettlementController {
   }
 
   @Post(':partnerId/vehicles')
+  @AdminOnly()
   select(
     @Param('partnerId') partnerId: string,
     @Body() dto: SelectInvoicesDto,
@@ -222,6 +253,7 @@ export class SettlementController {
   }
 
   @Delete(':partnerId/vehicles/:invoiceId')
+  @AdminOnly()
   unselect(
     @Param('partnerId') partnerId: string,
     @Param('invoiceId') invoiceId: string,

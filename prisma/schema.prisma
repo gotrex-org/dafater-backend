@@ -307,6 +307,7 @@ model Product {
   invoiceItems InvoiceItem[]
   priceListItems SupplierPriceListItem[]
   itemWeeks      InvoiceItemWeek[]
+  partnerItems   PartnerItem[]
   returnItems  ReturnItem[]
   dealItems    DealItem[]
   adjustments  Adjustment[]
@@ -516,6 +517,7 @@ model Invoice {
   // تعليم الفاتورة كعربية داخلة في شراكة مازن
   // العربيات الداخلة في تصفية شريك أو أكتر — شوف PartnerVehicle
   partnerVehicles PartnerVehicle[]
+  partnerItems    PartnerItem[]
   itemWeeks       InvoiceItemWeek[]
   transactions Transaction[]
   manifests    Manifest[]
@@ -1200,6 +1202,7 @@ model Partner {
 
   suppliers        PartnerSupplier[]
   vehicles         PartnerVehicle[]
+  items            PartnerItem[]
   capitalMovements PartnerCapitalMovement[]
   payments         PartnerPayment[]
 
@@ -1294,9 +1297,8 @@ model SupplierPriceListItem {
   @@index([productId])
 }
 
-// فاتورة مختارة للتصفية. المدير هو من يختار.
-//   برأس المال   → فاتورة بيع كاملة، والنصيب نسبة من صافي ربحها
-//   تصفية ثابتة  → فاتورة شراء، والمستحق = الكمية × `rate`
+// فاتورة بيع مختارة للتصفية برأس المال، والنصيب نسبة من صافي ربحها. المدير هو من يختار.
+// (التصفية الثابتة كانت بتختار فواتير شراء هنا بـ `rate` — اتنقلت لـ PartnerItem.)
 model PartnerVehicle {
   id        Int     @id @default(autoincrement())
   uid       String  @unique @default(cuid())
@@ -1307,12 +1309,6 @@ model PartnerVehicle {
   // تصفية ثابتة: المبلغ بالجنيه لكل وحدة في هذه الفاتورة. يُكتب مع الاختيار
   // فيبقى ثابتاً عليها، فتغييره لاحقاً لا يُعيد تسعير فواتير سابقة.
   rate      Float?
-  // تصفية ثابتة: بديل للمبلغ للوحدة — نسبة مئوية من قيمة أصناف المورد في الفاتورة.
-  // واحد بس من الاتنين بيتكتب (كتابة واحد بتمسح التاني).
-  percent   Float?
-  // false = صاحب الاسم أضافها بنفسه وتنتظر موافقة المالك، فلا تدخل الحساب.
-  // الموافقة بتحصل لما المالك يكتب المبلغ أو النسبة.
-  approved  Boolean @default(true)
   // برأس المال: تعديل يدوي لعدد الكراتين — بدونه العدد = مجموع كميات الأصناف
   cartons   Float?
   note      String?
@@ -1321,6 +1317,33 @@ model PartnerVehicle {
   updatedAt DateTime @updatedAt
 
   @@unique([partnerId, invoiceId])
+  @@index([invoiceId])
+}
+
+// صنف مختار في تصفية ثابتة من فاتورة شراء. المفتاح (الفاتورة، الصنف) مش سطر
+// الفاتورة، لأن تعديل الفاتورة بيعيد بناء أسطرها (زي InvoiceItemWeek).
+//   الكمية   = مجموع كميات الصنف في الفاتورة
+//   المستحق = الكمية × `rate`، أو قيمة الصنف في الفاتورة بالجنيه × `percent` ÷ 100
+// صاحب الاسم بيختار الأصناف بنفسه (approved = false) ومابتتحسبش لحد ما المالك
+// يوافق بكتابة المبلغ للوحدة أو النسبة.
+model PartnerItem {
+  id        Int     @id @default(autoincrement())
+  uid       String  @unique @default(cuid())
+  partner   Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId Int
+  // واحد بس من الاتنين (كتابة واحد بتمسح التاني)
+  rate      Float?
+  percent   Float?
+  approved  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([partnerId, invoiceId, productId])
   @@index([invoiceId])
 }
 

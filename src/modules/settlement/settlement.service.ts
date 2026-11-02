@@ -1,10 +1,11 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { BalancesService } from '../balances/balances.service';
 import { SettlementRepository } from './settlement.repository';
+import { SettlementItemsRepository, normalizeAr } from './settlement-items.repository';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
   SetItemWeekDto, UpdatePartnerVehicleDto, UpdatePriceListDto,
-  CapitalMovementDto, FixedRateDto,
+  CapitalMovementDto, FixedRateDto, SelectItemsDto,
 } from './dto/settlement.dto';
 
 /**
@@ -55,6 +56,7 @@ type CapitalMovementRow = Awaited<ReturnType<SettlementRepository['capitalMoveme
 export class SettlementService {
   constructor(
     private repo: SettlementRepository,
+    private items: SettlementItemsRepository,
     private balances: BalancesService,
   ) {}
 
@@ -627,7 +629,7 @@ export class SettlementService {
     const supplierAccount = me.admin ? await this.supplierAccount(partner) : null;
 
     if (partner.shareBasis === 'FIXED') {
-      const list = await this.fixedInvoices(partner, true);
+      const list = await this.fixedItems(partner);
       return {
         partner: this.present(partner),
         totals: null,
@@ -635,7 +637,7 @@ export class SettlementService {
           due: r2(list.reduce((s, v) => s + v.rawAmount, 0)),
           // الكمية المحسوبة فقط، حتى لا تظهر بطاقة كميات لا يقابلها مستحق
           qty: r2(list.reduce((s, v) => s + (v.amount == null ? 0 : v.qty), 0)),
-          invoices: list.filter((v) => v.approved).length,
+          items: list.filter((v) => v.approved).length,
           // موافق عليها ولم يُحسب مستحقها (بدون مبلغ، أو نسبة على فاتورة دولار غير مسعّرة)
           needsAmount: list.filter((v) => v.approved && v.amount == null).length,
           // أضافها صاحب الاسم وتنتظر موافقة المالك
@@ -678,78 +680,60 @@ export class SettlementService {
     };
   }
 
-  // ----------------------- التصفية الثابتة (مبلغ للوحدة) -----------------------
+  // ------------------ التصفية الثابتة (أصناف من فواتير الشراء) ------------------
 
   /**
-   * فواتير الشراء للتصفية الثابتة. لكل فاتورة مختارة:
-   *   الكمية   = مجموع كميات أصناف المورد غير الخدمية في الفاتورة
-   *   المستحق = الكمية × المبلغ المكتوب للفاتورة (`rate`)
-   * مثال: فاتورة شراء بها 800 وحدة والمبلغ 2 ج.م → 1,600.
-   * `onlySelected` تقصر النتيجة على المختار، وبدونها كل المرشّحين للاختيار.
+   * الأصناف المختارة للتصفية الثابتة — كل صف (فاتورة شراء، صنف):
+   *   الكمية   = مجموع كميات الصنف في الفاتورة
+   *   القيمة   = Σ الكمية × السعر بالجنيه (أساس النسبة)
+   *   المستحق = الكمية × المبلغ للوحدة، أو القيمة × النسبة
+   * مثال: 800 كرتونة فريدا والمبلغ 2 ج.م → 1,600.
+   * الصنف اللي صاحب الاسم أضافه ولسه ماتوافقش عليه مابيتحسبش.
    */
-  private async fixedInvoices(partner: PartnerRow, onlySelected: boolean) {
-    const { ids: scopeIds } = await this.scopeProducts(partner);
-    if (!scopeIds.length) return [];
-    const invoices = await this.repo.purchaseInvoices(
-      scopeIds,
-      this.supplierIds(partner),
-      partner.id,
-      onlySelected,
-    );
-    const scope = new Set(scopeIds);
+  private async fixedItems(partner: PartnerRow) {
+    const rows = await this.items.selected(partner.id);
     // فاتورة شراء دولار سعرها من دورة الدولار، وغير المسعّرة بالكامل قيمتها غير معروفة
-    const fifo = invoices.some((i) => i.currency === 'USD') ? await this.balances.usdFifo() : null;
-    const fx = (inv: (typeof invoices)[number]) => {
+    const fifo = rows.some((r) => r.invoice.currency === 'USD') ? await this.balances.usdFifo() : null;
+    const fx = (inv: { id: number; currency: string }) => {
       if (inv.currency !== 'USD') return 1;
       const f = fifo?.byInvoice.get(inv.id);
       return f && f.unpricedUsd <= 1e-9 && f.rate > 0 ? f.rate : null;
     };
 
-    return invoices.map((inv) => {
-      const lines = inv.items.filter((it) => !it.product.service && scope.has(it.product.id));
+    return rows.map((r) => {
+      const lines = r.invoice.items.filter((it) => it.productId === r.productId);
       const qty = lines.reduce((s, it) => s + it.qty, 0);
-      const rateFx = fx(inv);
-      // قيمة أصناف المورد بالجنيه — أساس النسبة
+      const rateFx = fx(r.invoice);
       const value = rateFx == null ? null : lines.reduce((s, it) => s + it.qty * it.price, 0) * rateFx;
-      const row = inv.partnerVehicles[0];
-      const rate = row?.rate ?? null;
-      const percent = row?.percent ?? null;
-      // أضافها صاحب الاسم ولم يوافق المالك بعد: لا تدخل الحساب
-      const approved = row ? row.approved : false;
-      const raw = !approved ? null
-        : rate != null ? qty * rate
-        : percent != null && value != null ? (value * percent) / 100
+      const raw = !r.approved ? null
+        : r.rate != null ? qty * r.rate
+        : r.percent != null && value != null ? (value * r.percent) / 100
         : null;
       return {
-        id: inv.uid,
-        selected: inv.partnerVehicles.length > 0,
-        approved,
-        invoiceNo: inv.no,
-        date: inv.date,
-        supplierName: inv.party?.name ?? '',
-        currency: inv.currency,
+        id: r.uid,
+        invoiceId: r.invoice.uid,
+        productId: r.product.uid,
+        approved: r.approved,
+        invoiceNo: r.invoice.no,
+        date: r.invoice.date,
+        supplierName: r.invoice.party?.name ?? '',
+        currency: r.invoice.currency,
+        productName: r.product.name,
+        unit: r.product.unit,
         qty: r2(qty),
         value: value == null ? null : r2(value),
-        rate,
-        percent,
+        rate: r.rate,
+        percent: r.percent,
         amount: raw == null ? null : r2(raw),
         rawAmount: raw ?? 0,
-        note: row?.note ?? null,
-        itemCount: lines.length,
-        items: lines.map((it) => ({
-          id: it.uid,
-          productName: it.product.name,
-          unit: it.product.unit,
-          qty: it.qty,
-        })),
       };
     });
   }
 
-  async fixedList(partnerUid: string, me: Requester, onlySelected = true) {
+  async fixedList(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
-    const list = await this.fixedInvoices(partner, onlySelected);
+    const list = await this.fixedItems(partner);
     return list.map(({ rawAmount, ...rest }) => rest);
   }
 
@@ -760,20 +744,84 @@ export class SettlementService {
   }
 
   /**
-   * كتابة أو تعديل المبلغ للوحدة على فاتورة شراء مختارة. الفاتورة تُفحص هنا
-   * أيضاً: اسم حُوّل من رأس المال إلى التصفية الثابتة تبقى له صفوف فواتير بيع
-   * مختارة، وبدون الفحص كان يمكن كتابة مبلغ للوحدة على فاتورة بيع.
+   * «اختيار الأصناف»: أسطر فواتير الشراء اللي اسم صنفها فيه المكتوب، في الفترة
+   * المحددة، متجمّعة بالفاتورة. كل صنف عليه علامة لو مختار للاسم ده (وموافق عليه ولا لأ).
    */
-  async setFixedRate(
-    partnerUid: string,
-    invoiceUid: string,
-    dto: { rate?: number; percent?: number },
-    me: Requester,
-  ) {
+  async searchItems(partnerUid: string, q: string, from: string | undefined, to: string | undefined, me: Requester) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
-    // واحد من الاتنين، وكتابته موافقة على الفاتورة لو صاحب الاسم هو اللي أضافها
-    let data: { rate: number | null; percent: number | null; approved: true };
+    const words = normalizeAr(q ?? '').split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const lines = (await this.items.purchaseLines(from ? utcDay(from) : undefined, to ? utcDay(to) : undefined))
+      .filter((l) => {
+        const name = normalizeAr(l.product.name);
+        return words.every((w) => name.includes(w));
+      });
+    const marks = await this.items.marks(partner.id, [...new Set(lines.map((l) => l.invoice.id))]);
+    const mark = new Map(marks.map((m) => [`${m.invoiceId}:${m.productId}`, m.approved]));
+
+    const invoices = new Map<number, {
+      invoiceId: string; invoiceNo: string; date: Date; supplierName: string;
+      items: Map<number, { productId: string; productName: string; unit: string | null; qty: number; selected: boolean; approved: boolean }>;
+    }>();
+    for (const l of lines) {
+      let inv = invoices.get(l.invoice.id);
+      if (!inv) {
+        inv = {
+          invoiceId: l.invoice.uid, invoiceNo: l.invoice.no, date: l.invoice.date,
+          supplierName: l.invoice.party?.name ?? '', items: new Map(),
+        };
+        invoices.set(l.invoice.id, inv);
+      }
+      const it = inv.items.get(l.productId);
+      if (it) { it.qty += l.qty; continue; }
+      const m = mark.get(`${l.invoice.id}:${l.productId}`);
+      inv.items.set(l.productId, {
+        productId: l.product.uid, productName: l.product.name, unit: l.product.unit,
+        qty: l.qty, selected: m !== undefined, approved: m === true,
+      });
+    }
+    return [...invoices.values()].map((inv) => ({
+      ...inv,
+      items: [...inv.items.values()].map((it) => ({ ...it, qty: r2(it.qty) })),
+    }));
+  }
+
+  /** المالك يضيف موافقاً عليه، وصاحب الاسم يضيف فينتظر موافقة المالك. */
+  async addItems(partnerUid: string, dto: SelectItemsDto, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    this.requireFixedBasis(partner);
+    const pairs = await this.items.resolve(dto.items);
+    const added = await this.items.add(partner.id, pairs, me.admin);
+    return { ok: true, added, skipped: pairs.length - added };
+  }
+
+  private async itemRow(partner: PartnerRow, invoiceUid: string, productUid: string) {
+    const [pair] = await this.items.resolve([{ invoiceId: invoiceUid, productId: productUid }]);
+    const row = await this.items.find(partner.id, pair.invoiceId, pair.productId);
+    if (!row) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
+    return row;
+  }
+
+  /** صاحب الاسم يسحب الصنف قبل الموافقة فقط — الموافق عليه يزيله المالك. */
+  async removeItem(partnerUid: string, invoiceUid: string, productUid: string, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    const row = await this.itemRow(partner, invoiceUid, productUid);
+    if (!me.admin && row.approved) {
+      throw new ForbiddenException('تمت الموافقة على هذا الصنف. الإزالة للمدير فقط');
+    }
+    await this.items.remove(row.id);
+    return { ok: true };
+  }
+
+  /**
+   * كتابة المبلغ للوحدة أو النسبة على صنف مختار — واحد منهم، وكتابته هي
+   * الموافقة لو صاحب الاسم هو اللي أضافه.
+   */
+  async setItemRate(partnerUid: string, invoiceUid: string, productUid: string, dto: FixedRateDto, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    this.requireFixedBasis(partner);
+    let data: { rate: number | null; percent: number | null; approved: boolean };
     if (dto.percent != null) {
       if (!(dto.percent > 0) || dto.percent > 100) {
         throw new BadRequestException('النسبة يجب أن تكون أكبر من صفر وحتى 100%');
@@ -783,17 +831,11 @@ export class SettlementService {
       if (!(Number(dto.rate) > 0)) throw new BadRequestException('المبلغ للوحدة يجب أن يكون أكبر من صفر');
       data = { rate: Number(dto.rate), percent: null, approved: true };
     }
-    const { ids } = await this.scopeProducts(partner);
-    const map = await this.repo.purchasableInvoiceIdsByUid(
-      [invoiceUid],
-      ids,
-      this.supplierIds(partner),
-    );
-    await this.repo.updateVehicle(partner.id, map.get(invoiceUid)!, data);
-    const list = await this.fixedInvoices(partner, true);
-    const row = list.find((v) => v.id === invoiceUid);
-    if (!row) throw new NotFoundException('هذه الفاتورة غير محددة في التصفية');
-    const { rawAmount, ...rest } = row;
+    const row = await this.itemRow(partner, invoiceUid, productUid);
+    await this.items.update(row.id, data);
+    const found = (await this.fixedItems(partner)).find((v) => v.id === row.uid);
+    if (!found) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
+    const { rawAmount, ...rest } = found;
     return rest;
   }
 
@@ -906,12 +948,12 @@ export class SettlementService {
       kind: 'DUE' | 'PAYMENT'; id?: string;
     }[];
     if (partner.shareBasis === 'FIXED') {
-      const list = await this.fixedInvoices(partner, true);
+      const list = await this.fixedItems(partner);
       rows = list
         .filter((v) => v.amount != null)
         .map((v) => ({
           date: v.date,
-          label: `فاتورة شراء #${v.invoiceNo}`,
+          label: `${v.productName} — فاتورة شراء #${v.invoiceNo}`,
           source: `${v.rate != null
             ? `${r2(v.qty)} وحدة × ${v.rate} ج.م`
             : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`}${v.supplierName ? ` — ${v.supplierName}` : ''}`,
@@ -990,53 +1032,37 @@ export class SettlementService {
   }
 
   /**
-   * الفواتير المرشّحة، ومعلّم على الداخلة في التصفية. برأس المال المرشّحون
-   * فواتير بيع كاملة، وبالتصفية الثابتة فواتير شراء.
+   * فواتير البيع المرشّحة للتصفية برأس المال، ومعلّم على الداخلة فيها.
+   * التصفية الثابتة بتختار أصناف من فواتير الشراء (searchItems / addItems).
    */
   async candidates(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
-    this.requireSelfService(partner, me);
-    if (partner.shareBasis === 'FIXED') {
-      const list = await this.fixedInvoices(partner, false);
-      return list.map(({ rawAmount, ...rest }) => rest);
-    }
+    this.requireCapitalBasis(partner);
     const list = await this.vehicles(partner, false);
     return list.map(({ lines, rawProfit, rawShare, rawCapital, rawSales, ...rest }) => rest);
   }
 
-  /** ids الفواتير المرشّحة بحسب طريقة التصفية، بعد التأكد إنها من أصناف الاسم. */
-  private async resolveSelectable(partner: PartnerRow, uids: string[], ids: number[]) {
-    return partner.shareBasis === 'FIXED'
-      ? this.repo.purchasableInvoiceIdsByUid(uids, ids, this.supplierIds(partner))
-      : this.repo.sellableInvoiceIdsByUid(uids, ids);
-  }
-
-  /**
-   * صاحب الاسم يضيف فواتير الشراء لتصفيته الثابتة بنفسه، وتنتظر موافقة المالك.
-   * التصفية برأس المال اختيار فواتيرها للمالك وحده.
-   */
-  private requireSelfService(partner: PartnerRow, me: Requester) {
-    if (!me.admin && partner.shareBasis !== 'FIXED') {
-      throw new ForbiddenException('اختيار الفواتير للمدير فقط');
+  private requireCapitalBasis(partner: PartnerRow) {
+    if (partner.shareBasis !== 'CAPITAL') {
+      throw new BadRequestException(`طريقة تصفية «${partner.name}» ليست برأس المال`);
     }
   }
 
   async selectInvoices(partnerUid: string, dto: SelectInvoicesDto, me: Requester) {
     const partner = await this.access(partnerUid, me);
-    this.requireSelfService(partner, me);
+    this.requireCapitalBasis(partner);
     const { ids } = await this.scopeProducts(partner);
-    const map = await this.resolveSelectable(partner, dto.invoiceIds, ids);
-    const added = await this.repo.selectInvoices(partner.id, [...map.values()], me.admin);
+    const map = await this.repo.sellableInvoiceIdsByUid(dto.invoiceIds, ids);
+    const added = await this.repo.selectInvoices(partner.id, [...map.values()]);
     return { ok: true, added, skipped: map.size - added };
   }
 
   /** «كل الفواتير مرة واحدة» — بتعلّم على كل مرشّح موجود دلوقتي. */
   async selectAll(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
+    this.requireCapitalBasis(partner);
     const { ids } = await this.scopeProducts(partner);
-    const invoices = partner.shareBasis === 'FIXED'
-      ? await this.repo.purchaseInvoices(ids, this.supplierIds(partner))
-      : await this.repo.saleInvoices(ids);
+    const invoices = await this.repo.saleInvoices(ids);
     if (!invoices.length) return { ok: true, added: 0, skipped: 0 };
     const added = await this.repo.selectInvoices(partner.id, invoices.map((i) => i.id));
     return { ok: true, added, skipped: invoices.length - added };
@@ -1045,11 +1071,6 @@ export class SettlementService {
   async unselectInvoice(partnerUid: string, invoiceUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
     const invoiceId = await this.repo.invoiceIdByUid(invoiceUid);
-    // صاحب الاسم يسحب طلبه قبل الموافقة فقط — الموافق عليها يزيلها المالك
-    if (!me.admin) {
-      const row = await this.repo.vehicleRow(partner.id, invoiceId);
-      if (row?.approved) throw new ForbiddenException('تمت الموافقة على هذه الفاتورة. الإزالة للمدير فقط');
-    }
     return this.repo.unselectInvoice(partner.id, invoiceId);
   }
 

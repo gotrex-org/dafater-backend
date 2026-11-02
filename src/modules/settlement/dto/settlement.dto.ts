@@ -39,7 +39,18 @@ export class CapitalMovementDto {
 }
 
 /** التصفية الثابتة: المبلغ للوحدة على فاتورة شراء مختارة. */
-/** المبلغ للوحدة أو النسبة — واحد منهم. كتابته موافقة على الفاتورة. */
+export class ItemRefDto {
+  @IsString() invoiceId: string;
+  @IsString() productId: string;
+}
+
+/** أصناف من فواتير الشراء للتصفية الثابتة — (فاتورة، صنف). */
+export class SelectItemsDto {
+  @IsArray() @ArrayNotEmpty() @ValidateNested({ each: true }) @Type(() => ItemRefDto)
+  items: ItemRefDto[];
+}
+
+/** المبلغ للوحدة أو النسبة — واحد منهم. كتابته موافقة على الصنف. */
 export class FixedRateDto {
   @IsOptional() @IsNumber() @Min(0) rate?: number;
   @IsOptional() @IsNumber() @Min(0) @Max(100) percent?: number;
