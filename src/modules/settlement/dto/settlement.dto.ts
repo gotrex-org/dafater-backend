@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Matches, Min,
+  ArrayNotEmpty, IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, Matches, Max, Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -39,8 +39,10 @@ export class CapitalMovementDto {
 }
 
 /** التصفية الثابتة: المبلغ للوحدة على فاتورة شراء مختارة. */
+/** المبلغ للوحدة أو النسبة — واحد منهم. كتابته موافقة على الفاتورة. */
 export class FixedRateDto {
-  @IsNumber() @Min(0) rate: number;
+  @IsOptional() @IsNumber() @Min(0) rate?: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(100) percent?: number;
 }
 
 /** دفعة تسلّمها الاسم من مستحقه — تنزل في كشف حسابه. */

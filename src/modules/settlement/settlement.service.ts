@@ -634,10 +634,12 @@ export class SettlementService {
         fixedTotals: {
           due: r2(list.reduce((s, v) => s + v.rawAmount, 0)),
           // الكمية المحسوبة فقط، حتى لا تظهر بطاقة كميات لا يقابلها مستحق
-          qty: r2(list.reduce((s, v) => s + (v.rate == null ? 0 : v.qty), 0)),
-          invoices: list.length,
-          // فواتير مختارة لم يُكتب لها المبلغ للوحدة بعد، فمستحقها غير محسوب
-          needsAmount: list.filter((v) => v.rate == null).length,
+          qty: r2(list.reduce((s, v) => s + (v.amount == null ? 0 : v.qty), 0)),
+          invoices: list.filter((v) => v.approved).length,
+          // موافق عليها ولم يُحسب مستحقها (بدون مبلغ، أو نسبة على فاتورة دولار غير مسعّرة)
+          needsAmount: list.filter((v) => v.approved && v.amount == null).length,
+          // أضافها صاحب الاسم وتنتظر موافقة المالك
+          pending: list.filter((v) => !v.approved).length,
         },
         supplierAccount,
         fixed: list.map(({ rawAmount, ...rest }) => rest),
@@ -695,24 +697,43 @@ export class SettlementService {
       onlySelected,
     );
     const scope = new Set(scopeIds);
+    // فاتورة شراء دولار سعرها من دورة الدولار، وغير المسعّرة بالكامل قيمتها غير معروفة
+    const fifo = invoices.some((i) => i.currency === 'USD') ? await this.balances.usdFifo() : null;
+    const fx = (inv: (typeof invoices)[number]) => {
+      if (inv.currency !== 'USD') return 1;
+      const f = fifo?.byInvoice.get(inv.id);
+      return f && f.unpricedUsd <= 1e-9 && f.rate > 0 ? f.rate : null;
+    };
 
     return invoices.map((inv) => {
       const lines = inv.items.filter((it) => !it.product.service && scope.has(it.product.id));
       const qty = lines.reduce((s, it) => s + it.qty, 0);
+      const rateFx = fx(inv);
+      // قيمة أصناف المورد بالجنيه — أساس النسبة
+      const value = rateFx == null ? null : lines.reduce((s, it) => s + it.qty * it.price, 0) * rateFx;
       const row = inv.partnerVehicles[0];
       const rate = row?.rate ?? null;
-      const amount = rate == null ? 0 : qty * rate;
+      const percent = row?.percent ?? null;
+      // أضافها صاحب الاسم ولم يوافق المالك بعد: لا تدخل الحساب
+      const approved = row ? row.approved : false;
+      const raw = !approved ? null
+        : rate != null ? qty * rate
+        : percent != null && value != null ? (value * percent) / 100
+        : null;
       return {
         id: inv.uid,
         selected: inv.partnerVehicles.length > 0,
+        approved,
         invoiceNo: inv.no,
         date: inv.date,
         supplierName: inv.party?.name ?? '',
         currency: inv.currency,
         qty: r2(qty),
+        value: value == null ? null : r2(value),
         rate,
-        amount: rate == null ? null : r2(amount),
-        rawAmount: amount,
+        percent,
+        amount: raw == null ? null : r2(raw),
+        rawAmount: raw ?? 0,
         note: row?.note ?? null,
         itemCount: lines.length,
         items: lines.map((it) => ({
@@ -743,17 +764,32 @@ export class SettlementService {
    * أيضاً: اسم حُوّل من رأس المال إلى التصفية الثابتة تبقى له صفوف فواتير بيع
    * مختارة، وبدون الفحص كان يمكن كتابة مبلغ للوحدة على فاتورة بيع.
    */
-  async setFixedRate(partnerUid: string, invoiceUid: string, rate: number, me: Requester) {
+  async setFixedRate(
+    partnerUid: string,
+    invoiceUid: string,
+    dto: { rate?: number; percent?: number },
+    me: Requester,
+  ) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
-    if (!(rate > 0)) throw new BadRequestException('المبلغ للوحدة يجب أن يكون أكبر من صفر');
+    // واحد من الاتنين، وكتابته موافقة على الفاتورة لو صاحب الاسم هو اللي أضافها
+    let data: { rate: number | null; percent: number | null; approved: true };
+    if (dto.percent != null) {
+      if (!(dto.percent > 0) || dto.percent > 100) {
+        throw new BadRequestException('النسبة يجب أن تكون أكبر من صفر وحتى 100%');
+      }
+      data = { rate: null, percent: dto.percent, approved: true };
+    } else {
+      if (!(Number(dto.rate) > 0)) throw new BadRequestException('المبلغ للوحدة يجب أن يكون أكبر من صفر');
+      data = { rate: Number(dto.rate), percent: null, approved: true };
+    }
     const { ids } = await this.scopeProducts(partner);
     const map = await this.repo.purchasableInvoiceIdsByUid(
       [invoiceUid],
       ids,
       this.supplierIds(partner),
     );
-    await this.repo.updateVehicle(partner.id, map.get(invoiceUid)!, { rate });
+    await this.repo.updateVehicle(partner.id, map.get(invoiceUid)!, data);
     const list = await this.fixedInvoices(partner, true);
     const row = list.find((v) => v.id === invoiceUid);
     if (!row) throw new NotFoundException('هذه الفاتورة غير محددة في التصفية');
@@ -872,11 +908,13 @@ export class SettlementService {
     if (partner.shareBasis === 'FIXED') {
       const list = await this.fixedInvoices(partner, true);
       rows = list
-        .filter((v) => v.rate != null)
+        .filter((v) => v.amount != null)
         .map((v) => ({
           date: v.date,
           label: `فاتورة شراء #${v.invoiceNo}`,
-          source: `${r2(v.qty)} وحدة × ${v.rate} ج.م${v.supplierName ? ` — ${v.supplierName}` : ''}`,
+          source: `${v.rate != null
+            ? `${r2(v.qty)} وحدة × ${v.rate} ج.م`
+            : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`}${v.supplierName ? ` — ${v.supplierName}` : ''}`,
           amount: v.rawAmount,
           kind: 'DUE' as const,
         }));
@@ -957,6 +995,7 @@ export class SettlementService {
    */
   async candidates(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
+    this.requireSelfService(partner, me);
     if (partner.shareBasis === 'FIXED') {
       const list = await this.fixedInvoices(partner, false);
       return list.map(({ rawAmount, ...rest }) => rest);
@@ -972,11 +1011,22 @@ export class SettlementService {
       : this.repo.sellableInvoiceIdsByUid(uids, ids);
   }
 
+  /**
+   * صاحب الاسم يضيف فواتير الشراء لتصفيته الثابتة بنفسه، وتنتظر موافقة المالك.
+   * التصفية برأس المال اختيار فواتيرها للمالك وحده.
+   */
+  private requireSelfService(partner: PartnerRow, me: Requester) {
+    if (!me.admin && partner.shareBasis !== 'FIXED') {
+      throw new ForbiddenException('اختيار الفواتير للمدير فقط');
+    }
+  }
+
   async selectInvoices(partnerUid: string, dto: SelectInvoicesDto, me: Requester) {
     const partner = await this.access(partnerUid, me);
+    this.requireSelfService(partner, me);
     const { ids } = await this.scopeProducts(partner);
     const map = await this.resolveSelectable(partner, dto.invoiceIds, ids);
-    const added = await this.repo.selectInvoices(partner.id, [...map.values()]);
+    const added = await this.repo.selectInvoices(partner.id, [...map.values()], me.admin);
     return { ok: true, added, skipped: map.size - added };
   }
 
@@ -995,6 +1045,11 @@ export class SettlementService {
   async unselectInvoice(partnerUid: string, invoiceUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
     const invoiceId = await this.repo.invoiceIdByUid(invoiceUid);
+    // صاحب الاسم يسحب طلبه قبل الموافقة فقط — الموافق عليها يزيلها المالك
+    if (!me.admin) {
+      const row = await this.repo.vehicleRow(partner.id, invoiceId);
+      if (row?.approved) throw new ForbiddenException('تمت الموافقة على هذه الفاتورة. الإزالة للمدير فقط');
+    }
     return this.repo.unselectInvoice(partner.id, invoiceId);
   }
 

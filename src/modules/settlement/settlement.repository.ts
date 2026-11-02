@@ -255,12 +255,19 @@ export class SettlementRepository {
   }
 
   /** بترجّع عدد اللي اتضاف فعلاً (المتعلّم عليه قبل كده مابيتعدّش). */
-  async selectInvoices(partnerId: number, invoiceIds: number[]) {
+  /** `approved = false` لما صاحب الاسم يضيف بنفسه — تنتظر موافقة المالك. */
+  async selectInvoices(partnerId: number, invoiceIds: number[], approved = true) {
     const { count } = await this.prisma.partnerVehicle.createMany({
-      data: invoiceIds.map((invoiceId) => ({ partnerId, invoiceId })),
+      data: invoiceIds.map((invoiceId) => ({ partnerId, invoiceId, approved })),
       skipDuplicates: true,
     });
     return count;
+  }
+
+  vehicleRow(partnerId: number, invoiceId: number) {
+    return this.prisma.partnerVehicle.findUnique({
+      where: { partnerId_invoiceId: { partnerId, invoiceId } },
+    });
   }
 
   async unselectInvoice(partnerId: number, invoiceId: number) {
@@ -333,7 +340,10 @@ export class SettlementRepository {
   async updateVehicle(
     partnerId: number,
     invoiceId: number,
-    data: { cartons?: number | null; rate?: number | null; note?: string | null },
+    data: {
+      cartons?: number | null; rate?: number | null; percent?: number | null;
+      approved?: boolean; note?: string | null;
+    },
   ) {
     const existing = await this.prisma.partnerVehicle.findUnique({
       where: { partnerId_invoiceId: { partnerId, invoiceId } },
