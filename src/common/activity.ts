@@ -20,6 +20,7 @@ export const SHIPPING_TX_TYPES = [
   'جمارك',
   'سداد مخلّص',
   'driverFreight',
+  'ناولون سائق على مورد',
   'driverTea',
   'driverDelay',
   'driverWeightDiff',

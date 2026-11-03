@@ -593,6 +593,7 @@ export class ReportsService {
       'ناولون': { group: 'EXTERNAL', name: 'ناولون داخلي' },
       'شاي': { group: 'EXTERNAL', name: 'شاي' },
       'driverFreight': { group: 'EXTERNAL', name: 'ناولون خارجي' },
+      'ناولون سائق على مورد': { group: 'EXTERNAL', name: 'ناولون خارجي' },
       'ناولون خارجي': { group: 'EXTERNAL', name: 'ناولون خارجي' },
       'مصروف بضاعة': { group: 'EXTERNAL', name: 'مصاريف بضاعة' },
       'مصروف': { group: 'EXTERNAL', name: 'مصاريف عامة' },
@@ -603,7 +604,7 @@ export class ReportsService {
         ...(date ? { date } : {}),
         OR: [{ type: { in: Object.keys(TYPE_MAP) } }, { categoryId: { not: null } }],
       },
-      select: { type: true, cashOut: true, cashIn: true, category: { select: { name: true, group: true } } },
+      select: { type: true, cashOut: true, cashIn: true, credit: true, debit: true, category: { select: { name: true, group: true } } },
     });
 
     const groups: Record<'WAREHOUSE' | 'EXTERNAL', Map<string, number>> = { WAREHOUSE: new Map(), EXTERNAL: new Map() };
@@ -613,7 +614,10 @@ export class ReportsService {
       const g = (r.category?.group as 'WAREHOUSE' | 'EXTERNAL' | undefined) ?? fallback?.group;
       const name = r.category?.name ?? fallback?.name;
       if (!g || !name) continue;
-      const amt = (Number(r.cashOut) || 0) - (Number(r.cashIn) || 0);
+      // الناولون على حساب مورد مصروف بدون حركة خزنة، فقيمته في حساب المورد.
+      const amt = r.type === 'ناولون سائق على مورد'
+        ? (Number(r.credit) || 0) - (Number(r.debit) || 0)
+        : (Number(r.cashOut) || 0) - (Number(r.cashIn) || 0);
       groups[g].set(name, (groups[g].get(name) ?? 0) + amt);
     }
 

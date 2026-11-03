@@ -39,6 +39,8 @@ export class AddPaymentDto {
   @IsOptional() @IsString() note?: string;
   @IsOptional() @IsString() paymentType?: string;
   @IsOptional() @IsString() treasuryId?: string;
+  // ناولون السائق على حساب مورد بدل الخزنة (uid المورد)
+  @IsOptional() @IsString() supplierId?: string;
   @IsOptional() @IsNumber() @Min(0) weightDiffAmount?: number;
 }
 

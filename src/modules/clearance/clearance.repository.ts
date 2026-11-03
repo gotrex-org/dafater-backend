@@ -20,7 +20,7 @@ const MOVEMENT_INCLUDE = {
 } as const;
 
 export type MovementData = {
-  date: Date; type: string; partyId: number; clearanceAgentId: number;
+  date: Date; type: string; partyId: number; clearanceAgentId: number | null;
   debit?: number; credit?: number;
   cashOut?: number; treasuryId?: number;
   manifestId?: number; categoryId?: number;

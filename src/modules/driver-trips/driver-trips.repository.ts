@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
 
@@ -60,7 +61,7 @@ export class DriverTripsRepository {
   // either one cascades to the other — see transaction-cascade.ts.
   createPaymentWithTreasuryTx(
     payment: { tripId: number; date: Date; amount: number; paymentType: string; note: string | null },
-    treasuryTx?: { date: Date; type: string; cashOut: number; treasuryId: number; note: string },
+    treasuryTx?: Prisma.TransactionUncheckedCreateInput,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const createdTx = treasuryTx ? await tx.transaction.create({ data: treasuryTx }) : null;

@@ -147,6 +147,17 @@ export class ClearanceService {
    * بمورد، الحركة بتترحّل على حساب المورد.
    */
   async addExpense(dto: AddClearanceExpenseDto, userIntId?: number) {
+    // جمرك على حساب مورد مباشرة: بدون مكتب، فلا يُحسب في مستحقات أي مكتب.
+    if (dto.supplierId) {
+      const manifest = await this.requireOurManifest(dto.manifestId);
+      const supplier = await this.requireEgpSupplier(dto.supplierId);
+      const categoryId = await this.resolveCategory(dto.categoryId);
+      return this.repo.createMovement({
+        ...this.expenseRow(dto, manifest, supplier, supplier, categoryId),
+        clearanceAgentId: null,
+        ...(userIntId ? { createdById: userIntId } : {}),
+      });
+    }
     const { manifest, agent, ledger, categoryId } = await this.expenseParts(dto);
     const tx = await this.repo.createMovement({
       ...this.expenseRow(dto, manifest, agent, ledger, categoryId),
@@ -225,14 +236,16 @@ export class ClearanceService {
     const picked = dto.agentId ? await this.requireAgent(dto.agentId, true) : null;
     const newAgent = picked && picked.id !== currentAgentId ? picked : null;
     if (newAgent?.hidden) throw new BadRequestException(`المكتب ${newAgent.name} مؤرشف. استعده أولاً`);
-    const ledgerParty = newAgent
+    // نقل حركة جمرك على حساب مورد مباشرة. التخليص النقدي مدفوع من الخزنة فلا ينطبق عليه.
+    const toSupplier = dto.supplierId && exp && !pay ? await this.requireEgpSupplier(dto.supplierId) : null;
+    const ledgerParty = toSupplier ?? (newAgent
       ? await this.ledgerOf(newAgent)
-      : await this.prisma.party.findUniqueOrThrow({ where: { id: tx.partyId! } });
-    const agentId = newAgent?.id ?? currentAgentId;
+      : await this.prisma.party.findUniqueOrThrow({ where: { id: tx.partyId! } }));
+    const pinAgentId = toSupplier ? null : newAgent?.id ?? tx.clearanceAgentId;
     const date = dto.date ? new Date(dto.date) : undefined;
     const common: Prisma.TransactionUncheckedUpdateInput = {
       ...(date ? { date } : {}),
-      ...(newAgent ? { partyId: ledgerParty.id, clearanceAgentId: newAgent.id } : {}),
+      ...(toSupplier ? { partyId: toSupplier.id, clearanceAgentId: null } : newAgent ? { partyId: ledgerParty.id, clearanceAgentId: newAgent.id } : {}),
     };
 
     const updates: { id: number; data: Prisma.TransactionUncheckedUpdateInput }[] = [];
@@ -273,7 +286,7 @@ export class ClearanceService {
     }
 
     const [first] = await this.repo.updateMovements(updates);
-    if (manifest) await this.pinAgentOnManifest(manifest, agentId);
+    if (manifest && pinAgentId) await this.pinAgentOnManifest(manifest, pinAgentId);
     return first;
   }
 
@@ -290,6 +303,7 @@ export class ClearanceService {
 
   private async expenseParts(dto: AddClearanceExpenseDto) {
     const manifest = await this.requireOurManifest(dto.manifestId);
+    if (!dto.agentId) throw new BadRequestException('اختر مكتب التخليص');
     const agent = await this.requireAgent(dto.agentId);
     const ledger = await this.ledgerOf(agent);
     const categoryId = await this.resolveCategory(dto.categoryId);
@@ -341,6 +355,15 @@ export class ClearanceService {
       throw new BadRequestException(`عملة حساب المورد  تختلف عن عملة المكتب. لا يمكن الربط`);
     }
     return supplier.id;
+  }
+
+  /** مورد بالجنيه: مبالغ الجمرك بالجنيه، والدولار لا يتحرك بنفس الرقم. */
+  private async requireEgpSupplier(uid: string) {
+    const supplier = await this.repo.findPartyByUid(uid);
+    if (!supplier) throw new NotFoundException('المورد غير موجود');
+    if (supplier.role !== 'SUPPLIER') throw new BadRequestException(`${supplier.name} غير مسجل كمورد`);
+    if (supplier.currency === 'USD') throw new BadRequestException('لا يمكن إضافة جمرك بالجنيه على حساب مورد بالدولار');
+    return supplier;
   }
 
   /** أول تخليص على الكشف بيثبّت المكتب عليه، عشان الكشف يعرف مكتبه. */

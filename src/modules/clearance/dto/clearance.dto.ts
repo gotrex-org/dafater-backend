@@ -8,7 +8,8 @@ import { IsBoolean, IsDateString, IsNumber, IsOptional, IsPositive, IsString, Mi
  */
 export class AddClearanceExpenseDto {
   @IsString() manifestId: string; // uid كشف العربية
-  @IsString() agentId: string;    // uid مكتب التخليص (طرف بدور CLEARANCE)
+  @IsOptional() @IsString() agentId?: string; // uid مكتب التخليص (طرف بدور CLEARANCE)
+  @IsOptional() @IsString() supplierId?: string; // أو على حساب مورد مباشرة، بدون مكتب
   @IsDateString() date: string;
   @IsNumber() @IsPositive() amount: number;
   @IsOptional() @IsString() categoryId?: string; // بند المصروف (جمارك / أرضيات / أتعاب…)
@@ -64,6 +65,7 @@ export class UpdateClearanceMovementDto {
   @IsOptional() @IsDateString() date?: string;
   @IsOptional() @IsNumber() @IsPositive() amount?: number;
   @IsOptional() @IsString() agentId?: string;
+  @IsOptional() @IsString() supplierId?: string; // نقل الحركة على حساب مورد مباشرة
   @IsOptional() @IsString() manifestId?: string;
   @IsOptional() @IsString() treasuryId?: string;
   @IsOptional() @IsNumber() @IsPositive() rate?: number;

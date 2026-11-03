@@ -305,6 +305,24 @@ export class DriverTripsService {
         throw new BadRequestException(`المبلغ (${dto.amount}) أكبر من فرق الوزن المتبقي (${remaining})`);
     }
 
+    // ناولون على حساب مورد: دفعة للسائق وله على المورد، من غير حركة خزنة.
+    if (dto.supplierId) {
+      if (paymentType !== 'freight') throw new BadRequestException('الخصم على حساب مورد متاح لدفعات الناولون فقط');
+      const supplier = await this.prisma.party.findUnique({ where: { uid: dto.supplierId }, select: { id: true, name: true, role: true, currency: true } });
+      if (!supplier) throw new NotFoundException('المورد غير موجود');
+      if (supplier.role !== 'SUPPLIER') throw new BadRequestException(`${supplier.name} غير مسجل كمورد`);
+      if (supplier.currency === 'USD') throw new BadRequestException('لا يمكن إضافة ناولون بالجنيه على حساب مورد بالدولار');
+      const vehicle = [trip.vehicleNo, trip.trailerNo].filter(Boolean).join(' / ');
+      await this.repo.createPaymentWithTreasuryTx(
+        { tripId: trip.id, date: new Date(dto.date), amount: dto.amount, paymentType, note: dto.note?.trim() || `على حساب المورد ${supplier.name}` },
+        {
+          date: new Date(dto.date), type: 'ناولون سائق على مورد', partyId: supplier.id, credit: dto.amount, activity: 'SHIPPING',
+          note: dto.note?.trim() || `ناولون السائق ${trip.driverName}${vehicle ? ` — ${vehicle}` : ''} — عميل ${trip.clientName}`,
+        },
+      );
+      return this.findOne(uid);
+    }
+
     let treasury: { id: number } | null = null;
     if (dto.treasuryId) {
       treasury = await this.repo.findTreasuryByUid(dto.treasuryId) as any;
