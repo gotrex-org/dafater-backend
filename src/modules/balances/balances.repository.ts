@@ -170,6 +170,12 @@ export class BalancesRepository {
       totalQty += it.qty;
       totalAmt += it.qty * it.price + extras;
     }
+    // ناولون داخلي من صرف النقدية محمّل على الصنف من فاتورة شراء.
+    const linked = await this.prisma.transaction.aggregate({
+      where: { freightProductId: productId, freightInvoice: { kind: 'PURCHASE', fake: false } },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    totalAmt += (linked._sum.cashOut || 0) - (linked._sum.cashIn || 0);
     return totalQty > 0 ? totalAmt / totalQty : 0;
   }
 

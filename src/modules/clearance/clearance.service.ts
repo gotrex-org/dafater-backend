@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Currency, Prisma } from '@prisma/client';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
+import { requireAgentRate } from '../../common/agent-rate';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   AddCashClearanceDto, AddClearanceExpenseDto, ClearanceAgentDto, ClearanceQueryDto,
@@ -163,7 +164,8 @@ export class ClearanceService {
     const { manifest, agent, ledger, categoryId } = await this.expenseParts(dto);
     const treasury = await this.requireTreasury(dto.treasuryId);
     // المبلغ بعملة الحساب المرحّل عليه؛ الخزنة بتنقص بعملتها.
-    const cashOut = this.fromLedger(dto.amount, ledger.currency, treasury.currency, dto.rate);
+    const rate = await this.rateFor(ledger.currency, treasury.currency, new Date(dto.date));
+    const cashOut = this.fromLedger(dto.amount, ledger.currency, treasury.currency, rate);
     const groupId = crypto.randomUUID();
     const by = userIntId ? { createdById: userIntId } : {};
     const [exp] = await this.repo.createMovements([
@@ -171,7 +173,7 @@ export class ClearanceService {
       {
         date: new Date(dto.date), type: CLEARANCE_PAY_TYPE, partyId: ledger.id, clearanceAgentId: agent.id,
         debit: dto.amount, cashOut, treasuryId: treasury.id,
-        ...(cashOut !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
+        ...(rate ? { exchangeRate: rate, agentPriced: true } : {}),
         note: `تخليص نقدي كشف ${manifest.no}${this.viaAgent(agent, ledger)}`,
         groupId, ...by,
       },
@@ -188,7 +190,8 @@ export class ClearanceService {
     const agent = await this.requireAgent(dto.agentId);
     const ledgerParty = await this.ledgerOf(agent);
     const treasury = await this.requireTreasury(dto.treasuryId);
-    const ledger = this.toLedger(dto.amount, treasury.currency, ledgerParty.currency, dto.rate);
+    const rate = await this.rateFor(ledgerParty.currency, treasury.currency, new Date(dto.date));
+    const ledger = this.toLedger(dto.amount, treasury.currency, ledgerParty.currency, rate);
     return this.repo.createMovement({
       date: new Date(dto.date),
       type: CLEARANCE_PAY_TYPE,
@@ -197,7 +200,7 @@ export class ClearanceService {
       debit: ledger, // بيقلّل المستحق للمكتب
       cashOut: dto.amount,
       treasuryId: treasury.id,
-      ...(ledger !== dto.amount && dto.rate ? { exchangeRate: dto.rate } : {}),
+      ...(rate ? { exchangeRate: rate, agentPriced: true } : {}),
       note: dto.note?.trim() || `دفعة لمكتب التخليص ${agent.name}${ledgerParty.id !== agent.id ? ` (حساب المورد ${ledgerParty.name})` : ''}`,
       ...(userIntId ? { createdById: userIntId } : {}),
     });
@@ -253,17 +256,17 @@ export class ClearanceService {
         ? await this.requireTreasury(dto.treasuryId)
         : pay.treasuryId ? await this.prisma.treasuryAccount.findUniqueOrThrow({ where: { id: pay.treasuryId } }) : null;
       if (!treasury) throw new BadRequestException('اختر الخزنة');
-      const rate = dto.rate ?? (pay.exchangeRate || undefined);
+      const rate = await this.rateFor(ledgerParty.currency, treasury.currency, dto.date ? new Date(dto.date) : pay.date);
       if (exp) {
         // تخليص نقدي: المبلغ بعملة حساب المكتب، والخزنة بتنقص بعملتها.
         const ledger = dto.amount ?? exp.credit;
         const cashOut = this.fromLedger(ledger, ledgerParty.currency, treasury.currency, rate);
-        Object.assign(data, { debit: ledger, cashOut, treasuryId: treasury.id, exchangeRate: cashOut !== ledger ? rate ?? 0 : 0 });
+        Object.assign(data, { debit: ledger, cashOut, treasuryId: treasury.id, exchangeRate: rate ?? 0, agentPriced: !!rate });
       } else {
         // دفعة: المبلغ بعملة الخزنة.
         const cash = dto.amount ?? pay.cashOut;
         const ledger = this.toLedger(cash, treasury.currency, ledgerParty.currency, rate);
-        Object.assign(data, { debit: ledger, cashOut: cash, treasuryId: treasury.id, exchangeRate: ledger !== cash ? rate ?? 0 : 0 });
+        Object.assign(data, { debit: ledger, cashOut: cash, treasuryId: treasury.id, exchangeRate: rate ?? 0, agentPriced: !!rate });
         if (dto.note !== undefined) data.note = dto.note.trim() || pay.note;
       }
       updates.push({ id: pay.id, data });
@@ -355,6 +358,11 @@ export class ClearanceService {
       throw new BadRequestException(`كشف رقم ${manifest.no} خروجه من مكتب شحن، وليس له تخليص وجمارك عندنا`);
     }
     return manifest;
+  }
+
+  // سعر الوكيل في تاريخ الحركة لما الحساب والخزنة بعملتين مختلفتين.
+  private async rateFor(ledgerCur: Currency, treasuryCur: Currency, date: Date) {
+    return ledgerCur === treasuryCur ? undefined : requireAgentRate(this.prisma, date);
   }
 
   // مبلغ بعملة الخزنة → عملة حساب المكتب

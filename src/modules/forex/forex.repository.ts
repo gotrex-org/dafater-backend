@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { deleteTransactionAndEffects } from '../../common/transaction-cascade';
+import { repriceAgentRows } from '../../common/agent-rate';
 import { CreateAgentDto, UpdateAgentDto, EgpInDto, UsdOutDto, SettleDto, UpdateAgentTxDto } from './dto/forex.dto';
 
 @Injectable()
@@ -90,7 +91,7 @@ export class ForexRepository {
           note: dto.note ?? `توريد ${dto.usdAmount} دولار — سعر ${dto.exchangeRate}`,
         },
       });
-      return tx.dollarAgentTx.create({
+      const row = await tx.dollarAgentTx.create({
         data: {
           date: new Date(dto.date),
           type: 'USD_OUT',
@@ -103,6 +104,8 @@ export class ForexRepository {
         },
         include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
       });
+      await repriceAgentRows(tx);
+      return row;
     });
   }
 
@@ -178,11 +181,13 @@ export class ForexRepository {
       }
 
       if (cur.txId) await tx.transaction.update({ where: { id: cur.txId }, data: t });
-      return tx.dollarAgentTx.update({
+      const row = await tx.dollarAgentTx.update({
         where: { id },
         data: a,
         include: { treasury: { select: { uid: true, name: true } }, party: { select: { uid: true, name: true } } },
       });
+      if (cur.type === 'USD_OUT') await repriceAgentRows(tx);
+      return row;
     });
   }
 
@@ -194,5 +199,6 @@ export class ForexRepository {
     } else {
       await this.prisma.dollarAgentTx.delete({ where: { id } });
     }
+    if (agentTx.type === 'USD_OUT') await repriceAgentRows(this.prisma);
   }
 }

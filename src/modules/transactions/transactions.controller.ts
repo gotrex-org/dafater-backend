@@ -17,6 +17,13 @@ export class TransactionsController {
     return this.service.list(q, user);
   }
 
+  // فواتير الشراء التي فيها صنف بهذا الاسم — لتحميل الناولون الداخلي عليه.
+  @Get('freight-lines')
+  @Permissions('entry', 'treasury.settle')
+  freightLines(@Query('search') search?: string) {
+    return this.service.freightLines(search);
+  }
+
   @Get('pending')
   pending() {
     return this.service.pendingList();

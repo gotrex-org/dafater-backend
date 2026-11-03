@@ -4,6 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateReturnDto } from './dto/returns.dto';
+import { assertCashCurrency } from '../../common/currency-guard';
 
 const RETURN_INCLUDE = {
   party: true,
@@ -56,12 +57,13 @@ export class ReturnsRepository {
 
     return this.prisma.$transaction(async (tx) => {
       const [party, warehouse, treasury] = await Promise.all([
-        tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true } }),
+        tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, currency: true } }),
         tx.warehouse.findUniqueOrThrow({ where: { uid: dto.warehouseId }, select: { id: true } }),
         dto.treasuryId
-          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
+          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true, currency: true } })
           : Promise.resolve(null),
       ]);
+      if (refund > 0 && treasury) assertCashCurrency(party.currency, treasury.currency);
 
       const products = await tx.product.findMany({
         where: { uid: { in: dto.items.map((it) => it.productId) } },

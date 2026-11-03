@@ -30,6 +30,18 @@ export type FifoTx = {
 
 export type AgentRate = { date: Date; rate: number };
 
+// سعر الوكيل في تاريخ معيّن: آخر سعر حتى التاريخ، وقبل أول سعر يؤخذ أول سعر.
+// الأسعار مرتبة بالتاريخ من الأقدم.
+export function rateAtDate(rates: AgentRate[], date: Date): number | null {
+  if (!rates.length) return null;
+  let found = rates[0].rate;
+  for (const r of rates) {
+    if (r.date.getTime() > date.getTime()) break;
+    found = r.rate;
+  }
+  return found;
+}
+
 export type FifoTxResult = {
   usd: number;
   egp: number;           // القيمة بالجنيه للجزء المسعّر (الحقيقي)
@@ -76,16 +88,7 @@ export function computeUsdFifo(
     .filter((r) => r.rate > 0)
     .sort((a, b) => a.date.getTime() - b.date.getTime());
   const globalLastRate = rates.length ? rates[rates.length - 1].rate : 0;
-  // سعر الوكيل في تاريخ معيّن: آخر سعر حتى التاريخ، وقبل أول سعر يؤخذ أول سعر.
-  const rateAt = (date: Date): number | null => {
-    if (!rates.length) return null;
-    let found = rates[0].rate;
-    for (const r of rates) {
-      if (r.date.getTime() > date.getTime()) break;
-      found = r.rate;
-    }
-    return found;
-  };
+  const rateAt = (date: Date) => rateAtDate(rates, date);
   const earliestRate = rates.length ? rates[0].rate : null;
 
   const byTx = new Map<number, FifoTxResult>();
