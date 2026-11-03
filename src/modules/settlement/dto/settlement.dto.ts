@@ -132,3 +132,10 @@ export class SetItemWeekDto {
   /** null = ارجع لقايمة أسبوع تاريخ الفاتورة */
   @IsOptional() @IsString() priceListId?: string | null;
 }
+
+/** ترحيل لكشف الحساب: التاريخ (افتراضي اليوم) وملاحظة. */
+export class PostItemsDto {
+  @IsOptional() @Matches(DAY, { message: 'يجب أن يكون التاريخ بصيغة YYYY-MM-DD' })
+  date?: string;
+  @IsOptional() @IsString() note?: string;
+}

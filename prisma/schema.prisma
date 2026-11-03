@@ -137,6 +137,7 @@ model User {
   partner             Partner?
   capitalMovementsAdded PartnerCapitalMovement[] @relation("CapitalMovementCreatedBy")
   partnerPaymentsAdded  PartnerPayment[]         @relation("PartnerPaymentCreatedBy")
+  partnerPostingsAdded  PartnerPosting[]         @relation("PartnerPostingCreatedBy")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -1241,6 +1242,7 @@ model Partner {
   items            PartnerItem[]
   capitalMovements PartnerCapitalMovement[]
   payments         PartnerPayment[]
+  postings         PartnerPosting[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1390,13 +1392,48 @@ model PartnerItem {
   approved  Boolean @default(true)
   transaction Transaction?
 
+  // الترحيل: الصنف بيدخل كشف الحساب وحسابه مرة واحدة مع ترحيل (زي قيمة فاتورة)، وبعدها
+  // بيتأرشف. الكمية والسعر والمستحق بيتثبّتوا ساعة الترحيل فتعديل المستند بعدها مابيغيّرهمش.
+  // قبل الترحيل الصنف مابيدخلش الكشف ولا الحساب.
+  posting      PartnerPosting? @relation(fields: [postingId], references: [id], onDelete: SetNull)
+  postingId    Int?
+  postedQty    Float?
+  // سعر الشراء للوحدة بالجنيه ساعة الترحيل — null لو مكانش معروف (دولار غير مسعّر)
+  postedPrice  Float?
+  postedAmount Float?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([postingId])
   @@unique([partnerId, invoiceId, productId])
   @@unique([partnerId, dealId, productId])
   @@index([invoiceId])
   @@index([dealId])
+}
+
+// ترحيل لكشف حساب التصفية الثابتة: أصناف مسعّرة اتسجلت مرة واحدة كأنها قيمة فاتورة.
+// سطر واحد في الكشف بإجماليها، وبالضغط عليه تظهر أصنافه. للمدير فقط. حذف الترحيل بيرجّع
+// أصنافه غير مرحّلة.
+model PartnerPosting {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  partner   Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  partnerId Int
+  // رقم الترحيل عند الاسم (1، 2، 3…)
+  no        Int
+  date      DateTime
+  note      String?
+
+  createdBy   User? @relation("PartnerPostingCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById Int?
+
+  items PartnerItem[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([partnerId, no])
+  @@index([partnerId, date])
 }
 
 // أسبوع مفروض على صنف في فاتورة — لما دفع العربية يتقسم على أسبوعين.

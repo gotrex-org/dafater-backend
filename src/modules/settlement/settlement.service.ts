@@ -646,7 +646,11 @@ export class SettlementService {
         fixedTotals: {
           // رأس المال الحالي (الافتتاحي + الإضافات − النقص)
           capital: r2(partner.capital + moves.reduce((s, m) => s + m.amount, 0)),
-          due: r2(list.reduce((s, v) => s + v.rawAmount, 0)),
+          // المستحق = المرحّل لكشف الحساب بس
+          due: r2(list.reduce((s, v) => s + (v.posted ? v.rawAmount : 0), 0)),
+          // مسعّر ولسه مااترحّلش — بيستنى زرار الترحيل
+          unposted: r2(list.reduce((s, v) => s + (!v.posted && v.amount != null ? v.rawAmount : 0), 0)),
+          unpostedCount: list.filter((v) => !v.posted && v.amount != null).length,
           // الكمية المحسوبة فقط، حتى لا تظهر بطاقة كميات لا يقابلها مستحق
           qty: r2(list.reduce((s, v) => s + (v.amount == null ? 0 : v.qty), 0)),
           items: list.filter((v) => v.approved).length,
@@ -749,10 +753,17 @@ export class SettlementService {
       }
       const qty = doc.lines.reduce((s, it) => s + it.qty, 0);
       const value = doc.fx == null ? null : doc.lines.reduce((s, it) => s + it.qty * it.price, 0) * doc.fx;
-      const raw = !r.approved ? null
+      const live = !r.approved ? null
         : r.rate != null ? qty * r.rate
         : r.percent != null && value != null ? (value * r.percent) / 100
         : null;
+      // المرحّل قيمه مثبّتة ساعة الترحيل (زي الفاتورة)، فتعديل المستند بعدها مابيغيّرهاش
+      const posted = r.posting != null && r.postedAmount != null;
+      const raw = posted ? r.postedAmount! : live;
+      const shownQty = posted ? (r.postedQty ?? qty) : qty;
+      const shownValue = posted
+        ? (r.postedPrice != null ? r.postedPrice * shownQty : null)
+        : value;
       return [{
         id: r.uid,
         rowId: r.id,
@@ -760,8 +771,14 @@ export class SettlementService {
         invoiceId: doc.uid,
         productId: r.product.uid,
         approved: r.approved,
-        // اتكتب له مبلغ أو نسبة → في الأرشيف
+        // اتكتب له مبلغ أو نسبة → جاهز للترحيل
         priced: r.approved && (r.rate != null || r.percent != null),
+        // اترحّل لكشف الحساب → في الأرشيف، ومايترحّلش تاني
+        posted,
+        posting: r.posting ? { id: r.posting.uid, no: r.posting.no, date: r.posting.date } : null,
+        postingRowId: r.postingId,
+        /** سعر شراء الوحدة بالجنيه (للترحيل وجدوله) */
+        unitPrice: shownValue != null && shownQty > 0 ? r2(shownValue / shownQty) : null,
         invoiceNo: doc.no,
         date: doc.date,
         supplierName: doc.supplierName,
@@ -769,8 +786,8 @@ export class SettlementService {
         currency: doc.currency,
         productName: r.product.name,
         unit: r.product.unit,
-        qty: r2(qty),
-        value: value == null ? null : r2(value),
+        qty: r2(shownQty),
+        value: shownValue == null ? null : r2(shownValue),
         rate: r.rate,
         percent: r.percent,
         amount: raw == null ? null : r2(raw),
@@ -790,8 +807,8 @@ export class SettlementService {
    * للوحدة ولا النسبة — دي حسابات المالك.
    */
   private forViewer(list: Awaited<ReturnType<SettlementService['fixedItems']>>, me: Requester) {
-    return list.map(({ rawAmount, rowId, ...rest }) =>
-      (me.admin ? rest : { ...rest, value: null, rate: null, percent: null }));
+    return list.map(({ rawAmount, rowId, postingRowId, ...rest }) =>
+      (me.admin ? rest : { ...rest, value: null, rate: null, percent: null, unitPrice: null }));
   }
 
   async fixedList(partnerUid: string, me: Requester) {
@@ -878,6 +895,7 @@ export class SettlementService {
     const partner = await this.access(partnerUid, me);
     if (!me.admin) throw new ForbiddenException('إزالة الأصناف للمدير فقط');
     const row = await this.itemRow(partner, ref);
+    if (row.postingId) throw new BadRequestException('الصنف مرحّل لكشف الحساب. احذف الترحيل الأول');
     // حركة المستحق في حسابه بتتمسح معاه (onDelete Cascade)
     await this.items.remove(row.id);
     return { ok: true };
@@ -901,12 +919,65 @@ export class SettlementService {
       data = { rate: Number(dto.rate), percent: null, approved: true };
     }
     const row = await this.itemRow(partner, ref);
+    if (row.postingId) throw new BadRequestException('الصنف مرحّل لكشف الحساب ومبلغه مثبّت. احذف الترحيل الأول');
     await this.items.update(row.id, data);
     const list = await this.fixedItems(partner);
     await this.syncLedger(partner, list);
     const found = this.forViewer(list.filter((v) => v.id === row.uid), me)[0];
     if (!found) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
     return found;
+  }
+
+  // ------------------------------- الترحيل -------------------------------
+
+  /**
+   * ترحيل لكشف الحساب — للمدير فقط: كل الأصناف المسعّرة اللي لسه مااترحّلتش بتتسجل
+   * مرة واحدة كأنها قيمة فاتورة (سطر واحد في الكشف)، وقيمها بتتثبّت، وبتروح الأرشيف.
+   * الصنف المرحّل مايترحّلش تاني (ولا يتعدّل مبلغه) إلا لو الترحيل اتحذف.
+   */
+  async postItems(partnerUid: string, dto: { date?: string; note?: string }, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    this.requireFixedBasis(partner);
+    const ready = (await this.fixedItems(partner)).filter((v) => !v.posted && v.amount != null && v.rawAmount > 0);
+    if (!ready.length) throw new BadRequestException('لا توجد أصناف مسعّرة غير مرحّلة');
+    const posting = await this.items.createPosting(
+      partner.id,
+      {
+        date: dto.date ? utcDay(dto.date) : utcDay(new Date().toISOString()),
+        note: dto.note || null,
+        createdById: me.intId,
+      },
+      ready.map((v) => ({ id: v.rowId, qty: v.qty, price: v.unitPrice, amount: r2(v.rawAmount) })),
+    );
+    await this.syncLedger(partner);
+    return { ok: true, id: posting.uid, no: posting.no, count: ready.length, amount: r2(ready.reduce((s, v) => s + v.rawAmount, 0)) };
+  }
+
+  /** حذف ترحيل — للمدير فقط. أصنافه ترجع غير مرحّلة وتطلع من الكشف والحساب. */
+  async deletePosting(partnerUid: string, postingUid: string, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    const posting = await this.items.postingByUid(partner.id, postingUid);
+    await this.items.deletePosting(posting.id);
+    await this.syncLedger(partner);
+    return { ok: true };
+  }
+
+  /**
+   * تفاصيل ترحيل زي الفاتورة: الأصناف بكمياتها وسعر الشراء والفرق (المبلغ للوحدة أو
+   * النسبة) والمستحق. صاحب الاسم يرى الكمية والمستحق فقط.
+   */
+  async postingDetail(partnerUid: string, postingUid: string, me: Requester) {
+    const partner = await this.access(partnerUid, me);
+    const posting = await this.items.postingByUid(partner.id, postingUid);
+    const list = (await this.fixedItems(partner)).filter((v) => v.postingRowId === posting.id);
+    return {
+      id: posting.uid,
+      no: posting.no,
+      date: posting.date,
+      note: posting.note,
+      total: r2(list.reduce((s, v) => s + v.rawAmount, 0)),
+      items: this.forViewer(list, me),
+    };
   }
 
   // --------------------------- حركات رأس المال ---------------------------
@@ -1047,21 +1118,30 @@ export class SettlementService {
       kind: 'CAPITAL' | 'DUE' | 'PAYMENT'; id?: string;
       /** سطر من حركات رأس المال (حذفه من رأس المال، مش من الدفعات) */
       capital?: boolean;
+      /** سطر ترحيل (بالضغط عليه تظهر أصنافه) */
+      posting?: boolean;
     }[];
     if (fixed) {
       const list = await this.fixedItems(partner);
       await this.syncLedger(partner, list);
-      rows = list
-        .filter((v) => v.amount != null)
-        .map((v) => ({
-          date: v.date,
-          label: 'تصفية',
-          source: `${v.productName} — ${this.docLabel(v)}: ${me.admin
-            ? (v.rate != null ? `${r2(v.qty)} وحدة × ${v.rate} ج.م` : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`)
-            : `${r2(v.qty)} وحدة`}`,
-          amount: v.rawAmount,
-          kind: 'DUE' as const,
-        }));
+      // سطر واحد لكل ترحيل بإجمالي أصنافه — زي قيمة فاتورة، وبالضغط عليه تظهر الأصناف
+      const groups = new Map<string, { no: number; date: Date; amount: number; count: number }>();
+      for (const v of list) {
+        if (!v.posted || !v.posting) continue;
+        const g = groups.get(v.posting.id) ?? { no: v.posting.no, date: v.posting.date, amount: 0, count: 0 };
+        g.amount += v.rawAmount;
+        g.count += 1;
+        groups.set(v.posting.id, g);
+      }
+      rows = [...groups.entries()].map(([id, g]) => ({
+        date: g.date,
+        label: `تصفية — ترحيل #${g.no}`,
+        source: `${g.count} صنف`,
+        amount: g.amount,
+        kind: 'DUE' as const,
+        id,
+        posting: true,
+      }));
     } else {
       const list = await this.vehicles(partner, true);
       await this.syncLedger(partner);
@@ -1130,6 +1210,7 @@ export class SettlementService {
         id: r.id ?? null,
         kind: r.kind,
         capital: !!r.capital,
+        posting: !!r.posting,
         date: r.date,
         label: r.label,
         source: r.source,
@@ -1240,9 +1321,10 @@ export class SettlementService {
         createdById: p.createdById,
       });
     }
+    // المستحق بيدخل حسابه مع الترحيل بس، بقيمته المثبّتة
     for (const v of list) {
       const a = r2(v.rawAmount);
-      if (v.amount == null || !(a > 0)) continue;
+      if (!v.posted || v.amount == null || !(a > 0)) continue;
       rows.push({
         ...base,
         partnerItemId: v.rowId,

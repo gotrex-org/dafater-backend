@@ -7,7 +7,7 @@ import { SettlementViewerGuard } from './settlement-viewer.guard';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
   SetItemWeekDto, UpdatePartnerVehicleDto, UpdatePriceListDto,
-  CapitalMovementDto, FixedRateDto, PartnerPaymentDto, SelectItemsDto,
+  CapitalMovementDto, FixedRateDto, PartnerPaymentDto, PostItemsDto, SelectItemsDto,
 } from './dto/settlement.dto';
 
 /**
@@ -180,6 +180,26 @@ export class SettlementController {
     @Query('kind') kind?: string,
   ) {
     return this.service.setItemRate(partnerId, { invoiceId, productId, kind: kind === 'deal' ? 'deal' : 'invoice' }, dto, me);
+  }
+
+  // -------------------------------- الترحيل --------------------------------
+
+  /** ترحيل الأصناف المسعّرة لكشف الحساب مرة واحدة (زي قيمة فاتورة) — للمدير فقط. */
+  @Post(':partnerId/postings')
+  @AdminOnly()
+  post(@Param('partnerId') partnerId: string, @Body() dto: PostItemsDto, @CurrentUser() me: Requester) {
+    return this.service.postItems(partnerId, dto, me);
+  }
+
+  @Get(':partnerId/postings/:id')
+  posting(@Param('partnerId') partnerId: string, @Param('id') id: string, @CurrentUser() me: Requester) {
+    return this.service.postingDetail(partnerId, id, me);
+  }
+
+  @Delete(':partnerId/postings/:id')
+  @AdminOnly()
+  deletePosting(@Param('partnerId') partnerId: string, @Param('id') id: string, @CurrentUser() me: Requester) {
+    return this.service.deletePosting(partnerId, id, me);
   }
 
   // ------------------------------ كشف الحساب ------------------------------

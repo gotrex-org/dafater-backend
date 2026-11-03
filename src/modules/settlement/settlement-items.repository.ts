@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /** تطبيع للبحث: «فريده» تلاقي «فريدة»، و«احمد» تلاقي «أحمد». */
@@ -72,6 +72,7 @@ export class SettlementItemsRepository {
       where: { partnerId },
       include: {
         product: { select: { uid: true, name: true, unit: true } },
+        posting: { select: { uid: true, no: true, date: true } },
         invoice: {
           select: {
             id: true, uid: true, no: true, date: true, currency: true,
@@ -193,5 +194,55 @@ export class SettlementItemsRepository {
 
   remove(id: number) {
     return this.prisma.partnerItem.delete({ where: { id } });
+  }
+
+  // ------------------------------- الترحيل -------------------------------
+
+  postings(partnerId: number) {
+    return this.prisma.partnerPosting.findMany({
+      where: { partnerId },
+      include: { createdBy: { select: { name: true } } },
+      orderBy: [{ date: 'asc' }, { no: 'asc' }],
+    });
+  }
+
+  async postingByUid(partnerId: number, uid: string) {
+    const p = await this.prisma.partnerPosting.findUnique({ where: { uid } });
+    if (!p || p.partnerId !== partnerId) throw new NotFoundException('الترحيل غير موجود لهذا الاسم');
+    return p;
+  }
+
+  /**
+   * ترحيل جديد بالأصناف دي وقيمها المثبّتة — في transaction واحدة، والشرط
+   * `postingId: null` بيمنع ترحيل صنف مرتين لو اتنين داسوا في نفس اللحظة.
+   */
+  async createPosting(
+    partnerId: number,
+    data: { date: Date; note: string | null; createdById: number | null },
+    items: { id: number; qty: number; price: number | null; amount: number }[],
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const last = await tx.partnerPosting.findFirst({ where: { partnerId }, orderBy: { no: 'desc' }, select: { no: true } });
+      const posting = await tx.partnerPosting.create({ data: { partnerId, no: (last?.no ?? 0) + 1, ...data } });
+      for (const it of items) {
+        const { count } = await tx.partnerItem.updateMany({
+          where: { id: it.id, partnerId, postingId: null },
+          data: { postingId: posting.id, postedQty: it.qty, postedPrice: it.price, postedAmount: it.amount },
+        });
+        if (!count) throw new BadRequestException('صنف في القائمة اترحّل قبل كده — حدّث الصفحة');
+      }
+      return posting;
+    });
+  }
+
+  /** حذف ترحيل: أصنافه ترجع غير مرحّلة بقيمها الحالية. */
+  async deletePosting(id: number) {
+    await this.prisma.$transaction([
+      this.prisma.partnerItem.updateMany({
+        where: { postingId: id },
+        data: { postingId: null, postedQty: null, postedPrice: null, postedAmount: null },
+      }),
+      this.prisma.partnerPosting.delete({ where: { id } }),
+    ]);
   }
 }
