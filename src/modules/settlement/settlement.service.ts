@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { BalancesService } from '../balances/balances.service';
 import { SettlementRepository } from './settlement.repository';
-import { SettlementItemsRepository, normalizeAr } from './settlement-items.repository';
+import { DocKind, ItemRefInput, SettlementItemsRepository, normalizeAr } from './settlement-items.repository';
 import { LEDGER_TYPES, LedgerRow, SettlementLedgerRepository } from './settlement-ledger.repository';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
@@ -690,45 +690,79 @@ export class SettlementService {
     };
   }
 
-  // ------------------ التصفية الثابتة (أصناف من فواتير الشراء) ------------------
+  // ------------- التصفية الثابتة (أصناف من فواتير الشراء والبيع الخارجي) -------------
 
   /**
-   * الأصناف المختارة للتصفية الثابتة — كل صف (فاتورة شراء، صنف):
-   *   الكمية   = مجموع كميات الصنف في الفاتورة
-   *   القيمة   = Σ الكمية × السعر بالجنيه (أساس النسبة)
+   * الأصناف المختارة للتصفية الثابتة — كل صف (مستند شراء، صنف):
+   *   الكمية   = مجموع كميات الصنف في المستند
+   *   القيمة   = Σ الكمية × سعر الشراء بالجنيه (أساس النسبة)
    *   المستحق = الكمية × المبلغ للوحدة، أو القيمة × النسبة
+   * المستند فاتورة شراء، أو بيع خارجي (سعر الشراء فيه buyPrice من المورد).
    * مثال: 800 كرتونة فريدا والمبلغ 2 ج.م → 1,600.
    * الصنف اللي صاحب الاسم أضافه ولسه ماتوافقش عليه مابيتحسبش.
    */
   private async fixedItems(partner: PartnerRow) {
     const rows = await this.items.selected(partner.id);
-    // فاتورة شراء دولار سعرها من دورة الدولار، وغير المسعّرة بالكامل قيمتها غير معروفة
-    const fifo = rows.some((r) => r.invoice.currency === 'USD') ? await this.balances.usdFifo() : null;
-    const fx = (inv: { id: number; currency: string }) => {
+    // مستند دولار سعره من دورة الدولار، وغير المسعّر بالكامل قيمته غير معروفة
+    const usd = rows.some((r) => r.invoice?.currency === 'USD' || r.deal?.supplier.currency === 'USD');
+    const fifo = usd ? await this.balances.usdFifo() : null;
+    const invoiceFx = (inv: { id: number; currency: string }) => {
       if (inv.currency !== 'USD') return 1;
       const f = fifo?.byInvoice.get(inv.id);
       return f && f.unpricedUsd <= 1e-9 && f.rate > 0 ? f.rate : null;
     };
+    // البيع الخارجي: سعر الصرف من دفعات الوكيل اللي قابلت حركة «شراء خارجي»
+    const dealFx = (deal: { supplier: { currency: string }; transactions: { id: number }[] }) => {
+      if (deal.supplier.currency !== 'USD') return 1;
+      const legs = deal.transactions.map((t) => fifo?.byTx.get(t.id));
+      if (!legs.length || legs.some((l) => !l || l.unpricedUsd > 1e-9)) return null;
+      const priced = legs.reduce((s, l) => s + (l?.pricedUsd ?? 0), 0);
+      return priced > 0 ? legs.reduce((s, l) => s + (l?.egp ?? 0), 0) / priced : null;
+    };
 
-    return rows.map((r) => {
-      const lines = r.invoice.items.filter((it) => it.productId === r.productId);
-      const qty = lines.reduce((s, it) => s + it.qty, 0);
-      const rateFx = fx(r.invoice);
-      const value = rateFx == null ? null : lines.reduce((s, it) => s + it.qty * it.price, 0) * rateFx;
+    const list = rows.flatMap((r) => {
+      let doc: {
+        kind: DocKind; uid: string; no: string; date: Date; supplierName: string; currency: string;
+        buyer: string | null; lines: { qty: number; price: number }[]; fx: number | null;
+      };
+      if (r.invoice) {
+        const inv = r.invoice;
+        doc = {
+          kind: 'invoice', uid: inv.uid, no: inv.no, date: inv.date, supplierName: inv.party?.name ?? '',
+          currency: inv.currency, buyer: inv.transactions[0]?.createdBy?.name ?? null,
+          lines: inv.items.filter((it) => it.productId === r.productId), fx: invoiceFx(inv),
+        };
+      } else if (r.deal) {
+        const d = r.deal;
+        doc = {
+          kind: 'deal', uid: d.uid, no: d.no, date: d.date, supplierName: d.supplier?.name ?? '',
+          currency: d.supplier.currency, buyer: d.transactions.find((t) => t.createdBy)?.createdBy?.name ?? null,
+          lines: d.items.filter((it) => it.productId === r.productId).map((it) => ({ qty: it.qty, price: it.buyPrice })),
+          fx: dealFx(d),
+        };
+      } else {
+        return [];
+      }
+      const qty = doc.lines.reduce((s, it) => s + it.qty, 0);
+      const value = doc.fx == null ? null : doc.lines.reduce((s, it) => s + it.qty * it.price, 0) * doc.fx;
       const raw = !r.approved ? null
         : r.rate != null ? qty * r.rate
         : r.percent != null && value != null ? (value * r.percent) / 100
         : null;
-      return {
+      return [{
         id: r.uid,
         rowId: r.id,
-        invoiceId: r.invoice.uid,
+        kind: doc.kind,
+        invoiceId: doc.uid,
         productId: r.product.uid,
         approved: r.approved,
-        invoiceNo: r.invoice.no,
-        date: r.invoice.date,
-        supplierName: r.invoice.party?.name ?? '',
-        currency: r.invoice.currency,
+        // اتكتب له مبلغ أو نسبة → في الأرشيف
+        priced: r.approved && (r.rate != null || r.percent != null),
+        invoiceNo: doc.no,
+        date: doc.date,
+        supplierName: doc.supplierName,
+        buyer: doc.buyer,
+        currency: doc.currency,
         productName: r.product.name,
         unit: r.product.unit,
         qty: r2(qty),
@@ -737,15 +771,29 @@ export class SettlementService {
         percent: r.percent,
         amount: raw == null ? null : r2(raw),
         rawAmount: raw ?? 0,
-      };
+      }];
     });
+    return list.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }
+
+  /** «فاتورة شراء #12» أو «بيع خارجي #7». */
+  private docLabel(v: { kind: DocKind; invoiceNo: string }) {
+    return `${v.kind === 'deal' ? 'بيع خارجي' : 'فاتورة شراء'} #${v.invoiceNo}`;
+  }
+
+  /**
+   * صاحب الاسم يرى الرقم فقط: الكمية والمستحق، من غير قيمة الشراء ولا المبلغ
+   * للوحدة ولا النسبة — دي حسابات المالك.
+   */
+  private forViewer(list: Awaited<ReturnType<SettlementService['fixedItems']>>, me: Requester) {
+    return list.map(({ rawAmount, rowId, ...rest }) =>
+      (me.admin ? rest : { ...rest, value: null, rate: null, percent: null }));
   }
 
   async fixedList(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
-    const list = await this.fixedItems(partner);
-    return list.map(({ rawAmount, rowId, ...rest }) => rest);
+    return this.forViewer(await this.fixedItems(partner), me);
   }
 
   private requireFixedBasis(partner: PartnerRow) {
@@ -755,8 +803,9 @@ export class SettlementService {
   }
 
   /**
-   * «اختيار الأصناف»: أسطر فواتير الشراء اللي اسم صنفها فيه المكتوب، في الفترة
-   * المحددة، متجمّعة بالفاتورة. كل صنف عليه علامة لو مختار للاسم ده (وموافق عليه ولا لأ).
+   * «اختيار الأصناف»: أسطر فواتير الشراء والبيع الخارجي اللي اسم صنفها فيه المكتوب،
+   * في الفترة المحددة، متجمّعة بالمستند ومعاها مين سجّلها. كل صنف عليه علامة لو
+   * مختار للاسم ده (وموافق عليه ولا لأ).
    */
   async searchItems(partnerUid: string, q: string, from: string | undefined, to: string | undefined, me: Requester) {
     const partner = await this.access(partnerUid, me);
@@ -768,33 +817,38 @@ export class SettlementService {
         const name = normalizeAr(l.product.name);
         return words.every((w) => name.includes(w));
       });
-    const marks = await this.items.marks(partner.id, [...new Set(lines.map((l) => l.invoice.id))]);
-    const mark = new Map(marks.map((m) => [`${m.invoiceId}:${m.productId}`, m.approved]));
+    const invIds = [...new Set(lines.filter((l) => l.kind === 'invoice').map((l) => l.docId))];
+    const dealIds = [...new Set(lines.filter((l) => l.kind === 'deal').map((l) => l.docId))];
+    const marks = await this.items.marks(partner.id, invIds, dealIds);
+    const mark = new Map(marks.map((m) => [
+      m.dealId ? `deal:${m.dealId}:${m.productId}` : `invoice:${m.invoiceId}:${m.productId}`, m.approved,
+    ]));
 
-    const invoices = new Map<number, {
-      invoiceId: string; invoiceNo: string; date: Date; supplierName: string;
+    const docs = new Map<string, {
+      kind: DocKind; invoiceId: string; invoiceNo: string; date: Date; supplierName: string; buyer: string | null;
       items: Map<number, { productId: string; productName: string; unit: string | null; qty: number; selected: boolean; approved: boolean }>;
     }>();
     for (const l of lines) {
-      let inv = invoices.get(l.invoice.id);
-      if (!inv) {
-        inv = {
-          invoiceId: l.invoice.uid, invoiceNo: l.invoice.no, date: l.invoice.date,
-          supplierName: l.invoice.party?.name ?? '', items: new Map(),
+      const key = `${l.kind}:${l.docId}`;
+      let doc = docs.get(key);
+      if (!doc) {
+        doc = {
+          kind: l.kind, invoiceId: l.docUid, invoiceNo: l.no, date: l.date,
+          supplierName: l.supplierName, buyer: l.buyer, items: new Map(),
         };
-        invoices.set(l.invoice.id, inv);
+        docs.set(key, doc);
       }
-      const it = inv.items.get(l.productId);
+      const it = doc.items.get(l.productId);
       if (it) { it.qty += l.qty; continue; }
-      const m = mark.get(`${l.invoice.id}:${l.productId}`);
-      inv.items.set(l.productId, {
+      const m = mark.get(`${key}:${l.productId}`);
+      doc.items.set(l.productId, {
         productId: l.product.uid, productName: l.product.name, unit: l.product.unit,
         qty: l.qty, selected: m !== undefined, approved: m === true,
       });
     }
-    return [...invoices.values()].map((inv) => ({
-      ...inv,
-      items: [...inv.items.values()].map((it) => ({ ...it, qty: r2(it.qty) })),
+    return [...docs.values()].map((doc) => ({
+      ...doc,
+      items: [...doc.items.values()].map((it) => ({ ...it, qty: r2(it.qty) })),
     }));
   }
 
@@ -802,26 +856,24 @@ export class SettlementService {
   async addItems(partnerUid: string, dto: SelectItemsDto, me: Requester) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
-    const pairs = await this.items.resolve(dto.items);
-    const added = await this.items.add(partner.id, pairs, me.admin);
+    const keys = await this.items.resolve(dto.items);
+    const added = await this.items.add(partner.id, keys, me.admin);
     await this.syncLedger(partner);
-    return { ok: true, added, skipped: pairs.length - added };
+    return { ok: true, added, skipped: keys.length - added };
   }
 
-  private async itemRow(partner: PartnerRow, invoiceUid: string, productUid: string) {
-    const [pair] = await this.items.resolve([{ invoiceId: invoiceUid, productId: productUid }]);
-    const row = await this.items.find(partner.id, pair.invoiceId, pair.productId);
+  private async itemRow(partner: PartnerRow, ref: ItemRefInput) {
+    const [key] = await this.items.resolve([ref]);
+    const row = await this.items.find(partner.id, key);
     if (!row) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
     return row;
   }
 
-  /** صاحب الاسم يسحب الصنف قبل الموافقة فقط — الموافق عليه يزيله المالك. */
-  async removeItem(partnerUid: string, invoiceUid: string, productUid: string, me: Requester) {
+  /** إزالة صنف — للمالك فقط. صاحب الاسم يضيف أصنافاً فقط. */
+  async removeItem(partnerUid: string, ref: ItemRefInput, me: Requester) {
     const partner = await this.access(partnerUid, me);
-    const row = await this.itemRow(partner, invoiceUid, productUid);
-    if (!me.admin && row.approved) {
-      throw new ForbiddenException('تمت الموافقة على هذا الصنف. الإزالة للمدير فقط');
-    }
+    if (!me.admin) throw new ForbiddenException('إزالة الأصناف للمدير فقط');
+    const row = await this.itemRow(partner, ref);
     // حركة المستحق في حسابه بتتمسح معاه (onDelete Cascade)
     await this.items.remove(row.id);
     return { ok: true };
@@ -829,9 +881,9 @@ export class SettlementService {
 
   /**
    * كتابة المبلغ للوحدة أو النسبة على صنف مختار — واحد منهم، وكتابته هي
-   * الموافقة لو صاحب الاسم هو اللي أضافه.
+   * الموافقة لو صاحب الاسم هو اللي أضافه، وبعدها الصنف بيروح الأرشيف.
    */
-  async setItemRate(partnerUid: string, invoiceUid: string, productUid: string, dto: FixedRateDto, me: Requester) {
+  async setItemRate(partnerUid: string, ref: ItemRefInput, dto: FixedRateDto, me: Requester) {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
     let data: { rate: number | null; percent: number | null; approved: boolean };
@@ -844,14 +896,13 @@ export class SettlementService {
       if (!(Number(dto.rate) > 0)) throw new BadRequestException('المبلغ للوحدة يجب أن يكون أكبر من صفر');
       data = { rate: Number(dto.rate), percent: null, approved: true };
     }
-    const row = await this.itemRow(partner, invoiceUid, productUid);
+    const row = await this.itemRow(partner, ref);
     await this.items.update(row.id, data);
     const list = await this.fixedItems(partner);
     await this.syncLedger(partner, list);
-    const found = list.find((v) => v.id === row.uid);
+    const found = this.forViewer(list.filter((v) => v.id === row.uid), me)[0];
     if (!found) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
-    const { rawAmount, rowId, ...rest } = found;
-    return rest;
+    return found;
   }
 
   // --------------------------- حركات رأس المال ---------------------------
@@ -972,7 +1023,7 @@ export class SettlementService {
    */
   async statement(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
-    return this.buildStatement(partner);
+    return this.buildStatement(partner, me);
   }
 
   /**
@@ -980,11 +1031,16 @@ export class SettlementService {
    * في الكشف كمان، فالرصيد = رأس المال + المستحق − المسحوب — وده نفس رصيد حسابه
    * في البرنامج (syncLedger). برأس المال رأس المال أساس النسبة بس، فالرصيد = المستحق − المدفوع.
    */
-  private async buildStatement(partner: PartnerRow) {
+  //
+  // التصفية الثابتة سطورها ثلاثة أنواع: تصفية (مستحق صنف)، مدفوعات (رأس مال دفعه)،
+  // وسحب (سحب أو نقص من رأس المال). صاحب الاسم يرى رقم التصفية فقط من غير الحسبة.
+  private async buildStatement(partner: PartnerRow, me: Requester) {
     const fixed = partner.shareBasis === 'FIXED';
     let rows: {
       date: Date; label: string; source: string; amount: number;
       kind: 'CAPITAL' | 'DUE' | 'PAYMENT'; id?: string;
+      /** سطر من حركات رأس المال (حذفه من رأس المال، مش من الدفعات) */
+      capital?: boolean;
     }[];
     if (fixed) {
       const list = await this.fixedItems(partner);
@@ -993,10 +1049,10 @@ export class SettlementService {
         .filter((v) => v.amount != null)
         .map((v) => ({
           date: v.date,
-          label: `${v.productName} — فاتورة شراء #${v.invoiceNo}`,
-          source: `${v.rate != null
-            ? `${r2(v.qty)} وحدة × ${v.rate} ج.م`
-            : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`}${v.supplierName ? ` — ${v.supplierName}` : ''}`,
+          label: 'تصفية',
+          source: `${v.productName} — ${this.docLabel(v)}: ${me.admin
+            ? (v.rate != null ? `${r2(v.qty)} وحدة × ${v.rate} ج.م` : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`)
+            : `${r2(v.qty)} وحدة`}`,
           amount: v.rawAmount,
           kind: 'DUE' as const,
         }));
@@ -1019,15 +1075,19 @@ export class SettlementService {
     const dues = rows.reduce((s, r) => s + r.amount, 0);
 
     const moves = await this.repo.capitalMovements(partner.id);
-    const capital = partner.capital + moves.reduce((s, m) => s + m.amount, 0);
+    // ثابتة: الإضافة لرأس المال «مدفوعات» دفعها، والنقص «سحب» زي السحب العادي
+    const paidIn = partner.capital + moves.reduce((s, m) => s + Math.max(m.amount, 0), 0);
+    const capitalOut = moves.reduce((s, m) => s + Math.max(-m.amount, 0), 0);
     if (fixed) {
       for (const m of moves) {
         rows.push({
           date: m.date,
-          label: m.amount < 0 ? 'نقص من رأس المال' : 'إضافة لرأس المال',
-          source: m.note || (m.createdBy?.name ? `سجّلها ${m.createdBy.name}` : 'رأس مال'),
+          label: m.amount < 0 ? 'سحب' : 'مدفوعات',
+          source: m.note || (m.amount < 0 ? 'نقص من رأس المال' : 'إضافة لرأس المال'),
           amount: m.amount,
-          kind: 'CAPITAL',
+          kind: m.amount < 0 ? 'PAYMENT' : 'CAPITAL',
+          id: m.uid,
+          capital: true,
         });
       }
     }
@@ -1044,15 +1104,15 @@ export class SettlementService {
         id: p.uid,
       });
     }
-    const paid = paymentRows.reduce((s, p) => s + p.amount, 0);
+    const paid = paymentRows.reduce((s, p) => s + p.amount, 0) + (fixed ? capitalOut : 0);
 
-    // في نفس اليوم: رأس المال ثم المستحق ثم الدفعة، فالرصيد يقرأ صحيحاً
+    // في نفس اليوم: المدفوعات ثم التصفية ثم السحب، فالرصيد يقرأ صحيحاً
     const order = { CAPITAL: 0, DUE: 1, PAYMENT: 2 };
     rows.sort((a, b) => (a.date.getTime() - b.date.getTime()) || order[a.kind] - order[b.kind]);
     // رأس المال الافتتاحي أول سطر في الكشف دايماً
     if (fixed && partner.capital) {
       rows.unshift({
-        date: partner.createdAt, label: 'رأس المال الافتتاحي', source: 'من إعدادات التصفية',
+        date: partner.createdAt, label: 'مدفوعات', source: 'رأس المال الافتتاحي',
         amount: partner.capital, kind: 'CAPITAL',
       });
     }
@@ -1062,6 +1122,7 @@ export class SettlementService {
       return {
         id: r.id ?? null,
         kind: r.kind,
+        capital: !!r.capital,
         date: r.date,
         label: r.label,
         source: r.source,
@@ -1072,14 +1133,14 @@ export class SettlementService {
 
     return {
       partner: this.present(partner),
-      /** رأس المال الحالي (الافتتاحي + الإضافات − النقص) */
-      capital: r2(capital),
-      /** إجمالي المستحق من الفواتير المحسوبة */
+      /** ثابتة: المدفوعات (الافتتاحي + الإضافات). برأس المال: رأس المال الحالي */
+      capital: r2(fixed ? paidIn : paidIn - capitalOut),
+      /** إجمالي التصفية (المستحق) من الأصناف أو الفواتير المحسوبة */
       dues: r2(dues),
-      /** إجمالي ما تسلّمه */
+      /** ثابتة: إجمالي السحب (السحب + النقص من رأس المال). برأس المال: المدفوع له */
       paid: r2(paid),
-      /** الرصيد له: ثابتة = رأس المال + المستحق − المسحوب، برأس المال = المستحق − المدفوع */
-      total: r2((fixed ? capital : 0) + dues - paid),
+      /** الرصيد له: ثابتة = المدفوعات + التصفية − السحب، برأس المال = المستحق − المدفوع */
+      total: r2((fixed ? paidIn : 0) + dues - paid),
       entries,
     };
   }
@@ -1096,7 +1157,7 @@ export class SettlementService {
     }[] = [];
     for (const p of partners) {
       const partner = await this.repo.partnerByUid(p.uid);
-      const s = await this.buildStatement(partner);
+      const s = await this.buildStatement(partner, { admin: true, intId: 0 } as Requester);
       rows.push({
         id: partner.uid,
         name: partner.name,
@@ -1185,7 +1246,7 @@ export class SettlementService {
         treasuryId: null,
         credit: a,
         expAmt: a,
-        note: `${v.productName} — فاتورة شراء #${v.invoiceNo}: ${v.rate != null
+        note: `${v.productName} — ${this.docLabel(v)}: ${v.rate != null
           ? `${r2(v.qty)} × ${v.rate} ج.م` : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`}`,
         createdById: null,
       });

@@ -43,6 +43,8 @@ export class CapitalMovementDto {
 export class ItemRefDto {
   @IsString() invoiceId: string;
   @IsString() productId: string;
+  /** 'deal' = الصنف من بيع خارجي، وبدونه من فاتورة شراء */
+  @IsOptional() @IsIn(['invoice', 'deal']) kind?: 'invoice' | 'deal';
 }
 
 /** أصناف من فواتير الشراء للتصفية الثابتة — (فاتورة، صنف). */

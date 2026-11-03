@@ -757,6 +757,8 @@ model Deal {
   manifests    Manifest[]
   // رحلة السواق المربوطة بالعملية (واحد لواحد) — شوف DriverTrip.dealId
   driverTrip   DriverTrip? @relation("TripDeal")
+  // أصناف داخلة في تصفية ثابتة (شوف PartnerItem)
+  partnerItems PartnerItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1346,10 +1348,11 @@ model PartnerVehicle {
   @@index([invoiceId])
 }
 
-// صنف مختار في تصفية ثابتة من فاتورة شراء. المفتاح (الفاتورة، الصنف) مش سطر
-// الفاتورة، لأن تعديل الفاتورة بيعيد بناء أسطرها (زي InvoiceItemWeek).
-//   الكمية   = مجموع كميات الصنف في الفاتورة
-//   المستحق = الكمية × `rate`، أو قيمة الصنف في الفاتورة بالجنيه × `percent` ÷ 100
+// صنف مختار في تصفية ثابتة من فاتورة شراء أو من بيع خارجي (واحد بس من invoiceId
+// و dealId). المفتاح (المستند، الصنف) مش سطر المستند، لأن تعديل المستند بيعيد بناء
+// أسطره (زي InvoiceItemWeek).
+//   الكمية   = مجموع كميات الصنف في المستند
+//   المستحق = الكمية × `rate`، أو قيمة شراء الصنف بالجنيه × `percent` ÷ 100
 // صاحب الاسم بيختار الأصناف بنفسه (approved = false) ومابتتحسبش لحد ما المالك
 // يوافق بكتابة المبلغ للوحدة أو النسبة.
 model PartnerItem {
@@ -1357,8 +1360,10 @@ model PartnerItem {
   uid       String  @unique @default(cuid())
   partner   Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
   partnerId Int
-  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  invoiceId Int
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int?
+  deal      Deal?    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  dealId    Int?
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId Int
   // واحد بس من الاتنين (كتابة واحد بتمسح التاني)
@@ -1371,7 +1376,9 @@ model PartnerItem {
   updatedAt DateTime @updatedAt
 
   @@unique([partnerId, invoiceId, productId])
+  @@unique([partnerId, dealId, productId])
   @@index([invoiceId])
+  @@index([dealId])
 }
 
 // أسبوع مفروض على صنف في فاتورة — لما دفع العربية يتقسم على أسبوعين.

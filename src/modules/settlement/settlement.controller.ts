@@ -152,14 +152,17 @@ export class SettlementController {
     return this.service.addItems(partnerId, dto, me);
   }
 
+  /** إزالة صنف — للمدير فقط. */
   @Delete(':partnerId/items/:invoiceId/:productId')
+  @AdminOnly()
   removeItem(
     @Param('partnerId') partnerId: string,
     @Param('invoiceId') invoiceId: string,
     @Param('productId') productId: string,
     @CurrentUser() me: Requester,
+    @Query('kind') kind?: string,
   ) {
-    return this.service.removeItem(partnerId, invoiceId, productId, me);
+    return this.service.removeItem(partnerId, { invoiceId, productId, kind: kind === 'deal' ? 'deal' : 'invoice' }, me);
   }
 
   /** كتابة المبلغ للوحدة أو النسبة على صنف مختار — وهي الموافقة عليه. */
@@ -171,8 +174,9 @@ export class SettlementController {
     @Param('productId') productId: string,
     @Body() dto: FixedRateDto,
     @CurrentUser() me: Requester,
+    @Query('kind') kind?: string,
   ) {
-    return this.service.setItemRate(partnerId, invoiceId, productId, dto, me);
+    return this.service.setItemRate(partnerId, { invoiceId, productId, kind: kind === 'deal' ? 'deal' : 'invoice' }, dto, me);
   }
 
   // ------------------------------ كشف الحساب ------------------------------
