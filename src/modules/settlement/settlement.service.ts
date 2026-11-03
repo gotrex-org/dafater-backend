@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { BalancesService } from '../balances/balances.service';
 import { SettlementRepository } from './settlement.repository';
 import { SettlementItemsRepository, normalizeAr } from './settlement-items.repository';
+import { LEDGER_TYPES, LedgerRow, SettlementLedgerRepository } from './settlement-ledger.repository';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
   SetItemWeekDto, UpdatePartnerVehicleDto, UpdatePriceListDto,
@@ -57,6 +58,7 @@ export class SettlementService {
   constructor(
     private repo: SettlementRepository,
     private items: SettlementItemsRepository,
+    private ledger: SettlementLedgerRepository,
     private balances: BalancesService,
   ) {}
 
@@ -123,6 +125,7 @@ export class SettlementService {
     // على الإنشاء لا يوجد ما يُحذف، فـ `create` وحدها
     if (supplierIds) data.suppliers = { create: supplierIds.map((supplierId) => ({ supplierId })) };
     const partner = await this.repo.createPartner({ ...data, name: dto.name.trim() });
+    await this.syncLedger(await this.repo.partnerByUid(partner.uid));
     return this.present(partner);
   }
 
@@ -138,6 +141,8 @@ export class SettlementService {
       };
     }
     const updated = await this.repo.updatePartner(partner.id, data);
+    // الطريقة أو الاسم أو رأس المال الافتتاحي اتغيّروا: حسابه في البرنامج يتبعهم
+    await this.syncLedger(await this.repo.partnerByUid(uid));
     return this.present(updated);
   }
 
@@ -164,6 +169,8 @@ export class SettlementService {
   async deletePartner(uid: string) {
     const partner = await this.repo.partnerByUid(uid);
     await this.repo.deletePartner(partner.id);
+    // حسابه في البرنامج مالوش لازمة من غير التصفية (حركاته بتتمسح معاه)
+    if (partner.partyId) await this.ledger.deleteParty(partner.partyId);
     return { ok: true };
   }
 
@@ -629,11 +636,14 @@ export class SettlementService {
     const supplierAccount = me.admin ? await this.supplierAccount(partner) : null;
 
     if (partner.shareBasis === 'FIXED') {
-      const list = await this.fixedItems(partner);
+      const [list, moves] = await Promise.all([this.fixedItems(partner), this.repo.capitalMovements(partner.id)]);
+      await this.syncLedger(partner, list);
       return {
         partner: this.present(partner),
         totals: null,
         fixedTotals: {
+          // رأس المال الحالي (الافتتاحي + الإضافات − النقص)
+          capital: r2(partner.capital + moves.reduce((s, m) => s + m.amount, 0)),
           due: r2(list.reduce((s, v) => s + v.rawAmount, 0)),
           // الكمية المحسوبة فقط، حتى لا تظهر بطاقة كميات لا يقابلها مستحق
           qty: r2(list.reduce((s, v) => s + (v.amount == null ? 0 : v.qty), 0)),
@@ -644,7 +654,7 @@ export class SettlementService {
           pending: list.filter((v) => !v.approved).length,
         },
         supplierAccount,
-        fixed: list.map(({ rawAmount, ...rest }) => rest),
+        fixed: list.map(({ rawAmount, rowId, ...rest }) => rest),
         vehicles: [],
       };
     }
@@ -711,6 +721,7 @@ export class SettlementService {
         : null;
       return {
         id: r.uid,
+        rowId: r.id,
         invoiceId: r.invoice.uid,
         productId: r.product.uid,
         approved: r.approved,
@@ -734,7 +745,7 @@ export class SettlementService {
     const partner = await this.access(partnerUid, me);
     this.requireFixedBasis(partner);
     const list = await this.fixedItems(partner);
-    return list.map(({ rawAmount, ...rest }) => rest);
+    return list.map(({ rawAmount, rowId, ...rest }) => rest);
   }
 
   private requireFixedBasis(partner: PartnerRow) {
@@ -793,6 +804,7 @@ export class SettlementService {
     this.requireFixedBasis(partner);
     const pairs = await this.items.resolve(dto.items);
     const added = await this.items.add(partner.id, pairs, me.admin);
+    await this.syncLedger(partner);
     return { ok: true, added, skipped: pairs.length - added };
   }
 
@@ -810,6 +822,7 @@ export class SettlementService {
     if (!me.admin && row.approved) {
       throw new ForbiddenException('تمت الموافقة على هذا الصنف. الإزالة للمدير فقط');
     }
+    // حركة المستحق في حسابه بتتمسح معاه (onDelete Cascade)
     await this.items.remove(row.id);
     return { ok: true };
   }
@@ -833,9 +846,11 @@ export class SettlementService {
     }
     const row = await this.itemRow(partner, invoiceUid, productUid);
     await this.items.update(row.id, data);
-    const found = (await this.fixedItems(partner)).find((v) => v.id === row.uid);
+    const list = await this.fixedItems(partner);
+    await this.syncLedger(partner, list);
+    const found = list.find((v) => v.id === row.uid);
     if (!found) throw new NotFoundException('هذا الصنف غير محدد في التصفية');
-    const { rawAmount, ...rest } = found;
+    const { rawAmount, rowId, ...rest } = found;
     return rest;
   }
 
@@ -862,29 +877,41 @@ export class SettlementService {
   }
 
   /** إضافة أو نقص رأس مال على القديم — للمدير فقط. */
+  /**
+   * إضافة أو نقص رأس مال على القديم — للمدير فقط. في التصفية الثابتة الفلوس بتدخل
+   * الخزنة أو تخرج منها فعلاً، فالخزنة إجبارية (شوف syncLedger).
+   */
   async addCapitalMovement(
     partnerUid: string,
-    dto: { date: string; amount: number; note?: string },
+    dto: { date: string; amount: number; note?: string; treasuryId?: string },
     me: Requester,
   ) {
     const partner = await this.access(partnerUid, me);
-    if (partner.shareBasis !== 'CAPITAL') {
-      throw new BadRequestException(`طريقة تصفية «${partner.name}» ليست برأس المال`);
-    }
     if (!dto.amount) throw new BadRequestException('اكتب مبلغ الإضافة أو النقص');
-    await this.repo.createCapitalMovement({
+    const treasuryId = await this.fixedTreasury(partner, dto.treasuryId);
+    await this.ledger.createCapitalMovement({
       partnerId: partner.id,
       date: utcDay(dto.date),
       amount: dto.amount,
       note: dto.note || null,
       createdById: me.intId,
+      treasuryId,
     });
+    await this.syncLedger(partner);
     return this.capital(partnerUid, me);
+  }
+
+  /** التصفية الثابتة: خزنة الحركة إجبارية وبالجنيه. برأس المال الحركة بدون خزنة. */
+  private async fixedTreasury(partner: PartnerRow, treasuryUid?: string) {
+    if (partner.shareBasis !== 'FIXED') return null;
+    if (!treasuryUid) throw new BadRequestException('اختر الخزنة');
+    return this.ledger.egpTreasuryId(treasuryUid);
   }
 
   async deleteCapitalMovement(partnerUid: string, uid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
     const row = await this.repo.capitalMovementByUid(partner.id, uid);
+    // حركة الخزنة والحساب بتتمسح معاها (onDelete Cascade)
     await this.repo.deleteCapitalMovement(row.id);
     return this.capital(partnerUid, me);
   }
@@ -908,21 +935,24 @@ export class SettlementService {
     };
   }
 
-  /** تسجيل دفعة للاسم — للمدير فقط. */
+  /** تسجيل دفعة للاسم — للمدير فقط. في التصفية الثابتة سحب من خزنة على حسابه. */
   async addPayment(
     partnerUid: string,
-    dto: { date: string; amount: number; note?: string },
+    dto: { date: string; amount: number; note?: string; treasuryId?: string },
     me: Requester,
   ) {
     const partner = await this.access(partnerUid, me);
     if (!(dto.amount > 0)) throw new BadRequestException('اكتب مبلغ الدفعة');
-    await this.repo.createPayment({
+    const treasuryId = await this.fixedTreasury(partner, dto.treasuryId);
+    await this.ledger.createPayment({
       partnerId: partner.id,
       date: utcDay(dto.date),
       amount: dto.amount,
       note: dto.note || null,
       createdById: me.intId,
+      treasuryId,
     });
+    await this.syncLedger(partner);
     return this.payments(partnerUid, me);
   }
 
@@ -942,13 +972,23 @@ export class SettlementService {
    */
   async statement(partnerUid: string, me: Requester) {
     const partner = await this.access(partnerUid, me);
+    return this.buildStatement(partner);
+  }
 
+  /**
+   * الكشف نفسه. في التصفية الثابتة رأس المال (الافتتاحي والإضافات والنقص) سطور له
+   * في الكشف كمان، فالرصيد = رأس المال + المستحق − المسحوب — وده نفس رصيد حسابه
+   * في البرنامج (syncLedger). برأس المال رأس المال أساس النسبة بس، فالرصيد = المستحق − المدفوع.
+   */
+  private async buildStatement(partner: PartnerRow) {
+    const fixed = partner.shareBasis === 'FIXED';
     let rows: {
       date: Date; label: string; source: string; amount: number;
-      kind: 'DUE' | 'PAYMENT'; id?: string;
+      kind: 'CAPITAL' | 'DUE' | 'PAYMENT'; id?: string;
     }[];
-    if (partner.shareBasis === 'FIXED') {
+    if (fixed) {
       const list = await this.fixedItems(partner);
+      await this.syncLedger(partner, list);
       rows = list
         .filter((v) => v.amount != null)
         .map((v) => ({
@@ -978,12 +1018,26 @@ export class SettlementService {
 
     const dues = rows.reduce((s, r) => s + r.amount, 0);
 
+    const moves = await this.repo.capitalMovements(partner.id);
+    const capital = partner.capital + moves.reduce((s, m) => s + m.amount, 0);
+    if (fixed) {
+      for (const m of moves) {
+        rows.push({
+          date: m.date,
+          label: m.amount < 0 ? 'نقص من رأس المال' : 'إضافة لرأس المال',
+          source: m.note || (m.createdBy?.name ? `سجّلها ${m.createdBy.name}` : 'رأس مال'),
+          amount: m.amount,
+          kind: 'CAPITAL',
+        });
+      }
+    }
+
     // الدفعات تنزل بالسالب فيبان المتبقي في نفس الكشف
     const paymentRows = await this.repo.payments(partner.id);
     for (const p of paymentRows) {
       rows.push({
         date: p.date,
-        label: 'دفعة',
+        label: fixed ? 'سحب' : 'دفعة',
         source: p.note || (p.createdBy?.name ? `سجّلها ${p.createdBy.name}` : 'دفعة مستلمة'),
         amount: -p.amount,
         kind: 'PAYMENT',
@@ -992,9 +1046,16 @@ export class SettlementService {
     }
     const paid = paymentRows.reduce((s, p) => s + p.amount, 0);
 
-    // الدفعة في نفس يوم الفاتورة تأتي بعدها، فالرصيد يقرأ صحيحاً
-    rows.sort((a, b) => (a.date.getTime() - b.date.getTime())
-      || (a.kind === b.kind ? 0 : a.kind === 'DUE' ? -1 : 1));
+    // في نفس اليوم: رأس المال ثم المستحق ثم الدفعة، فالرصيد يقرأ صحيحاً
+    const order = { CAPITAL: 0, DUE: 1, PAYMENT: 2 };
+    rows.sort((a, b) => (a.date.getTime() - b.date.getTime()) || order[a.kind] - order[b.kind]);
+    // رأس المال الافتتاحي أول سطر في الكشف دايماً
+    if (fixed && partner.capital) {
+      rows.unshift({
+        date: partner.createdAt, label: 'رأس المال الافتتاحي', source: 'من إعدادات التصفية',
+        amount: partner.capital, kind: 'CAPITAL',
+      });
+    }
     let running = 0;
     const entries = rows.map((r) => {
       running += r.amount;
@@ -1011,14 +1072,132 @@ export class SettlementService {
 
     return {
       partner: this.present(partner),
+      /** رأس المال الحالي (الافتتاحي + الإضافات − النقص) */
+      capital: r2(capital),
       /** إجمالي المستحق من الفواتير المحسوبة */
       dues: r2(dues),
       /** إجمالي ما تسلّمه */
       paid: r2(paid),
-      /** المتبقي له = المستحق − المدفوع */
-      total: r2(dues - paid),
+      /** الرصيد له: ثابتة = رأس المال + المستحق − المسحوب، برأس المال = المستحق − المدفوع */
+      total: r2((fixed ? capital : 0) + dues - paid),
       entries,
     };
+  }
+
+  /**
+   * تقرير التصفيات: كل اسم برأس ماله ومستحقه وما سحبه ورصيده — نفس أرقام كشف حسابه.
+   * للمدير فقط.
+   */
+  async report() {
+    const partners = await this.repo.partners();
+    const rows: {
+      id: string; name: string; shareBasis: string; active: boolean;
+      capital: number; dues: number; paid: number; balance: number;
+    }[] = [];
+    for (const p of partners) {
+      const partner = await this.repo.partnerByUid(p.uid);
+      const s = await this.buildStatement(partner);
+      rows.push({
+        id: partner.uid,
+        name: partner.name,
+        shareBasis: partner.shareBasis,
+        active: partner.active,
+        capital: s.capital,
+        dues: s.dues,
+        paid: s.paid,
+        balance: s.total,
+      });
+    }
+    return {
+      rows,
+      totals: {
+        capital: r2(rows.reduce((a, r) => a + r.capital, 0)),
+        dues: r2(rows.reduce((a, r) => a + r.dues, 0)),
+        paid: r2(rows.reduce((a, r) => a + r.paid, 0)),
+        balance: r2(rows.reduce((a, r) => a + r.balance, 0)),
+      },
+    };
+  }
+
+  // ------------------------ حساب الاسم في البرنامج ------------------------
+
+  /**
+   * التصفية الثابتة جوه حسابات البرنامج: للاسم حساب (Party role = PARTNER) فيه
+   *   رأس المال الافتتاحي  → رصيد افتتاحي له
+   *   إضافة / نقص رأس مال  → له / عليه، ودخول / خروج من الخزنة المختارة
+   *   سحب (دفعة)           → عليه، وخروج من الخزنة
+   *   مستحق صنف موافق عليه → له (مصروف بدون خزنة)، ويتخصم من صافي الأرباح والخسائر
+   * الحركات بتتبني من بيانات التصفية بعد أي تعديل وعند فتح التصفية، فتعديل فاتورة
+   * الشراء نفسها بيوصل للحساب أول ما التصفية أو الأرباح والخسائر تتفتح.
+   * الاسم اللي مابقاش تصفية ثابتة حسابه بيرجع فاضي.
+   */
+  async syncLedger(partner: PartnerRow, items?: Awaited<ReturnType<SettlementService['fixedItems']>>) {
+    if (partner.shareBasis !== 'FIXED') {
+      if (partner.partyId) await this.ledger.clear(partner.partyId);
+      return;
+    }
+    const partyId = await this.ledger.ensureParty(partner);
+    const [list, moves, payments] = await Promise.all([
+      items ?? this.fixedItems(partner),
+      this.ledger.capitalRows(partner.id),
+      this.ledger.paymentRows(partner.id),
+    ]);
+    const rows: LedgerRow[] = [];
+    const base = { debit: 0, credit: 0, cashIn: 0, cashOut: 0, expAmt: 0 };
+    for (const m of moves) {
+      if (!m.amount) continue;
+      const a = r2(Math.abs(m.amount));
+      const cash = m.treasuryId != null;
+      rows.push({
+        ...base,
+        partnerCapitalId: m.id,
+        type: LEDGER_TYPES.capital,
+        date: m.date,
+        treasuryId: m.treasuryId,
+        ...(m.amount > 0 ? { credit: a, cashIn: cash ? a : 0 } : { debit: a, cashOut: cash ? a : 0 }),
+        note: m.note || `${m.amount > 0 ? 'إضافة لرأس مال' : 'نقص من رأس مال'} ${partner.name}`,
+        createdById: m.createdById,
+      });
+    }
+    for (const p of payments) {
+      if (!(p.amount > 0)) continue;
+      const a = r2(p.amount);
+      rows.push({
+        ...base,
+        partnerPaymentId: p.id,
+        type: LEDGER_TYPES.payment,
+        date: p.date,
+        treasuryId: p.treasuryId,
+        debit: a,
+        cashOut: p.treasuryId != null ? a : 0,
+        note: p.note || `سحب ${partner.name}`,
+        createdById: p.createdById,
+      });
+    }
+    for (const v of list) {
+      const a = r2(v.rawAmount);
+      if (v.amount == null || !(a > 0)) continue;
+      rows.push({
+        ...base,
+        partnerItemId: v.rowId,
+        type: LEDGER_TYPES.due,
+        date: v.date,
+        treasuryId: null,
+        credit: a,
+        expAmt: a,
+        note: `${v.productName} — فاتورة شراء #${v.invoiceNo}: ${v.rate != null
+          ? `${r2(v.qty)} × ${v.rate} ج.م` : `${v.percent}% من ${r2(v.value ?? 0)} ج.م`}`,
+        createdById: null,
+      });
+    }
+    await this.ledger.apply(partyId, rows);
+  }
+
+  /** كل أسماء التصفية الثابتة — قبل الأرباح والخسائر عشان تعديلات الفواتير توصل. */
+  async syncAllFixed() {
+    for (const p of await this.ledger.fixedPartners()) {
+      await this.syncLedger(await this.repo.partnerByUid(p.uid));
+    }
   }
 
   /** تفاصيل عربية: الأصناف وسعر شراء كل صنف وجاي منين. */

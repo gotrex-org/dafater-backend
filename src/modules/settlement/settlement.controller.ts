@@ -31,6 +31,13 @@ export class SettlementController {
 
   // ------------------------------- الأسماء -------------------------------
 
+  /** تقرير التصفيات: رأس مال كل اسم ومستحقه وما سحبه ورصيده. */
+  @Get('report')
+  @AdminOnly()
+  report() {
+    return this.service.report();
+  }
+
   @Get('partners')
   partners(@CurrentUser() me: Requester) {
     return this.service.partners(me);

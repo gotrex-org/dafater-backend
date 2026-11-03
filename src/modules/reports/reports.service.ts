@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Activity, InvoiceKind } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BalancesService } from '../balances/balances.service';
+import { SettlementService } from '../settlement/settlement.service';
+import { LEDGER_TYPES } from '../settlement/settlement-ledger.repository';
 import { computeVehicleProfits, DEAL_FREIGHT_TX_TYPE, FREIGHT_TX_TYPE } from '../../common/vehicle-profit';
 
 // حركات المصاريف اللي بتتوزّع على النشاطين في تقريري التجارة والشحن.
@@ -11,7 +13,11 @@ const EXPENSE_TYPES = ['مصروف', 'مصروف مخزن'];
 // thousand rows) makes in-memory aggregation simpler and fast enough vs. raw SQL.
 @Injectable()
 export class ReportsService {
-  constructor(private prisma: PrismaService, private balances: BalancesService) {}
+  constructor(
+    private prisma: PrismaService,
+    private balances: BalancesService,
+    private settlement: SettlementService,
+  ) {}
 
   // مبلغ حركة مصروف: صرف − توريد، أو مبلغ المصروف من غير خزنة (تسوية عهدة كمصروف).
   private expenseAmount(t: { cashOut: number; cashIn: number; expAmt: number }) {
@@ -479,6 +485,8 @@ export class ReportsService {
   // ربح وخسارة — revenue vs. cost vs. expenses for the period. Expenses split into
   // operating (salaries/rent — standalone) and goods-related (freight/شاي — added to cost).
   async profitLoss(from?: string, to?: string) {
+    // مستحقات التصفية الثابتة حركات مبنية من التصفية — تتحدّث الأول عشان تعديلات الفواتير توصل
+    await this.settlement.syncAllFixed();
     const s = await this.summary(from, to);
     const date = this.range(from, to);
     // كل حركة صرف/توريد بتأثر بالصافي: صرف (cashOut) − توريد (cashIn).
@@ -514,6 +522,12 @@ export class ReportsService {
     const expenses = net(opAgg) + warehouseExpenses;   // مصاريف تشغيلية (شخصية + مخزن)
     const goodsExpenses = net(goodsAgg) + net(goodsCashAgg); // مصاريف على البضاعة
     const settlement = net(settleAgg);                 // تسويات نقدية
+    // مستحقات أسماء التصفية الثابتة على أصنافهم (له في حسابه، من غير خزنة) — تتخصم من الصافي
+    const duesAgg = await this.prisma.transaction.aggregate({
+      where: { type: LEDGER_TYPES.due, ...(date ? { date } : {}) },
+      _sum: { credit: true, debit: true },
+    });
+    const partnerDues = (duesAgg._sum.credit || 0) - (duesAgg._sum.debit || 0);
     const revenue = s.netSales;
     const cost = (s.purchases - s.purchaseReturns) + goodsExpenses;
     const grossProfit = revenue - cost;
@@ -525,7 +539,8 @@ export class ReportsService {
       expenses,         // مصاريف تشغيلية (شخصية + مخزن)
       warehouseExpenses, // مصاريف المخزن لوحدها (جزء من expenses)
       settlement,       // تسويات نقدية
-      netProfit: grossProfit - expenses - settlement,
+      partnerDues,      // مستحقات التصفية الثابتة
+      netProfit: grossProfit - expenses - settlement - partnerDues,
     };
   }
 

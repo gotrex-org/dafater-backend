@@ -36,9 +36,10 @@ export class CapitalMovementDto {
   date: string;
   @IsNumber() amount: number;
   @IsOptional() @IsString() note?: string;
+  /** التصفية الثابتة: الخزنة (إجبارية هناك) */
+  @IsOptional() @IsString() treasuryId?: string;
 }
 
-/** التصفية الثابتة: المبلغ للوحدة على فاتورة شراء مختارة. */
 export class ItemRefDto {
   @IsString() invoiceId: string;
   @IsString() productId: string;
@@ -62,6 +63,8 @@ export class PartnerPaymentDto {
   date: string;
   @IsNumber() @Min(0) amount: number;
   @IsOptional() @IsString() note?: string;
+  /** التصفية الثابتة: الخزنة اللي السحب خارج منها (إجبارية هناك) */
+  @IsOptional() @IsString() treasuryId?: string;
 }
 
 export class CreatePartnerDto extends PartnerUpsertDto {

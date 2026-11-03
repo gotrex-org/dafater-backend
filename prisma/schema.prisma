@@ -33,6 +33,7 @@ enum PartyRole {
   AGENT // صاحب عمولة
   PERSON // صاحب عهدة (موظف أو أي شخص شايل فلوس أمانة/سلف)
   CLEARANCE // مخلّص جمركي — حساب جاري زي المورد، بيصرف على الجمارك ويتحاسب
+  PARTNER // اسم في التصفية الثابتة — حسابه: رأس ماله ومستحقه له، وسحبه عليه (شوف Partner.party)
 }
 
 // نوع خروج البضاعة — هو اللي بيحدد السلسلة بتكمل ولا لأ:
@@ -229,6 +230,7 @@ model Party {
   loans            Loan[]
   clearedManifests Manifest[] @relation("ManifestClearingAgent")
   partnerSuppliers PartnerSupplier[]    @relation("PartnerSupplier")
+  settlementPartner Partner? @relation("PartnerParty")
   supplierPriceLists SupplierPriceList[]
 
   createdAt DateTime @default(now())
@@ -250,6 +252,8 @@ model TreasuryAccount {
   deals             Deal[]
   returns           Return[]
   expenseSchedules  WarehouseExpenseSchedule[]
+  partnerCapitalMovements PartnerCapitalMovement[] @relation("PartnerCapitalTreasury")
+  partnerPayments         PartnerPayment[]         @relation("PartnerPaymentTreasury")
   itemFreightPayments InvoiceItem[] @relation("ItemFreightTreasury")
   itemTeaPayments     InvoiceItem[] @relation("ItemTeaTreasury")
   dealItemFreightPayments DealItem[] @relation("DealItemFreightTreasury")
@@ -463,6 +467,15 @@ model Transaction {
   // No formal FK — same "raw pointer" convention as LoanReturn.txId /
   // DriverTrip.delayTxId below; see backend/src/common/transaction-cascade.ts.
   groupId String?
+
+  // التصفية الثابتة: الحركة دي ظل لحركة في التصفية (رأس مال، سحب، مستحق صنف) وبتتبني
+  // منها تلقائي (SettlementService.syncLedger) — وبتتمسح معاها.
+  partnerItem      PartnerItem?            @relation(fields: [partnerItemId], references: [id], onDelete: Cascade)
+  partnerItemId    Int?                    @unique
+  partnerCapital   PartnerCapitalMovement? @relation(fields: [partnerCapitalId], references: [id], onDelete: Cascade)
+  partnerCapitalId Int?                    @unique
+  partnerPayment   PartnerPayment?         @relation(fields: [partnerPaymentId], references: [id], onDelete: Cascade)
+  partnerPaymentId Int?                    @unique
 
   createdAt DateTime @default(now())
 
@@ -1200,6 +1213,11 @@ model Partner {
   active        Boolean    @default(true)
   note          String?
 
+  // التصفية الثابتة: حساب الاسم في البرنامج (role = PARTNER). رأس ماله ومستحق أصنافه
+  // له، وسحبه عليه، فيظهر في ميزان المراجعة والأرباح والخسائر. بيتعمل تلقائي.
+  party         Party?     @relation("PartnerParty", fields: [partyId], references: [id], onDelete: SetNull)
+  partyId       Int?       @unique
+
   suppliers        PartnerSupplier[]
   vehicles         PartnerVehicle[]
   items            PartnerItem[]
@@ -1221,6 +1239,10 @@ model PartnerCapitalMovement {
   // موجب = إضافة، سالب = نقص
   amount    Float
   note      String?
+  // التصفية الثابتة: الخزنة اللي الفلوس دخلت لها أو خرجت منها
+  treasury    TreasuryAccount? @relation("PartnerCapitalTreasury", fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId  Int?
+  transaction Transaction?
 
   createdBy   User? @relation("CapitalMovementCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
@@ -1230,8 +1252,9 @@ model PartnerCapitalMovement {
   @@index([partnerId, date])
 }
 
-// دفعة اتسلّمها الاسم من مستحقه في التصفية. بتنزل في كشف حسابه فبيبان
-// المتبقي عليه. دي حركة في كشف التصفية بس — مش حركة خزنة ولا سطر Transaction.
+// دفعة (سحب) اتسلّمها الاسم من مستحقه في التصفية. بتنزل في كشف حسابه فبيبان
+// المتبقي عليه. برأس المال دي حركة في كشف التصفية بس؛ في التصفية الثابتة بتخرج من
+// خزنة وبتتسجل على حساب الاسم (Transaction.partnerPaymentId).
 model PartnerPayment {
   id        Int      @id @default(autoincrement())
   uid       String   @unique @default(cuid())
@@ -1240,6 +1263,9 @@ model PartnerPayment {
   date      DateTime
   amount    Float
   note      String?
+  treasury    TreasuryAccount? @relation("PartnerPaymentTreasury", fields: [treasuryId], references: [id], onDelete: SetNull)
+  treasuryId  Int?
+  transaction Transaction?
 
   createdBy   User? @relation("PartnerPaymentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
@@ -1339,6 +1365,7 @@ model PartnerItem {
   rate      Float?
   percent   Float?
   approved  Boolean @default(true)
+  transaction Transaction?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
