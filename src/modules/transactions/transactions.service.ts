@@ -3,9 +3,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { EntryType, PostEntryDto, ResolveDto, UpdateTransactionDto } from './dto/transactions.dto';
 import { TransactionsRepository } from './transactions.repository';
-import { assertCashCurrency } from '../../common/currency-guard';
-import { normalizeAr } from '../settlement/settlement-items.repository';
-import { requireAgentRate } from '../../common/agent-rate';
 
 @Injectable()
 export class TransactionsService {
@@ -25,14 +22,6 @@ export class TransactionsService {
     const amt = dto.amount;
     if (!amt || amt <= 0) throw new BadRequestException('المبلغ غير صحيح');
     this.requireTreasuryAllowed(dto.treasuryId, user);
-    // السعر لا يُكتب على الحركة. نفس العملة = نفس الرقم، وحساب بالجنيه مع خزنة بالدولار في
-    // التحصيل والدفع لمورد بسعر الوكيل في تاريخ الحركة.
-    dto = { ...dto, rate: undefined };
-    if (dto.partyId && dto.treasuryId) {
-      const usesRate = dto.type === EntryType.COLLECT || dto.type === EntryType.PAY_SUPPLIER;
-      const same = await this.checkPartyTreasury(dto.partyId, dto.treasuryId, usesRate);
-      if (!same && usesRate) dto = { ...dto, rate: await requireAgentRate(this.prisma, date) };
-    }
     // الوجهة في التحويل (treasuryId2) مش لازم تكون ضمن خزائن المستخدم — يقدر يحوّل لأي خزينة.
     // `create()` calls below mix relation `connect` syntax (treasury/party/category), which forces
     // Prisma's "checked" input — raw FK scalars like `createdById` aren't valid there, only the
@@ -45,7 +34,7 @@ export class TransactionsService {
         this.requirePart(dto.treasuryId, 'الخزينة');
         const hasRate = !!(dto.rate && dto.rate > 0);
         const cashIn = hasRate ? amt / dto.rate! : amt;
-        const cNote = dto.note;
+        const cNote = hasRate ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashIn.toFixed(2)} $)`.trim() : dto.note;
         const hasFee = !!(dto.transferFee && dto.transferFee > 0);
         const collectGroupId = hasFee ? crypto.randomUUID() : undefined;
         // التحصيل + رسوم النقل رجلين لازم يتكتبوا مع بعض أو ولا واحد — createAtomic بيضمن كده.
@@ -54,7 +43,6 @@ export class TransactionsService {
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           credit: amt, cashIn, note: cNote,
-          ...(hasRate ? { agentPriced: true, exchangeRate: dto.rate } : {}),
           clientNote: dto.clientNote || null,
           ...(collectGroupId ? { groupId: collectGroupId } : {}),
         }];
@@ -73,13 +61,14 @@ export class TransactionsService {
         this.requirePart(dto.treasuryId, 'الخزينة');
         const hasRate = !!(dto.rate && dto.rate > 0);
         const cashOut = hasRate ? amt / dto.rate! : amt;
-        const note = dto.note;
+        const note = hasRate
+          ? `${dto.note || ''} (${amt} ج ÷ ${dto.rate} = ${cashOut.toFixed(2)} $)`.trim()
+          : dto.note;
         const payment = await this.repo.create({
           ...eb, date, type: 'دفعة لمورد',
           party: { connect: { uid: dto.partyId } },
           treasury: { connect: { uid: dto.treasuryId } },
           debit: amt, cashOut, note,
-          ...(hasRate ? { agentPriced: true, exchangeRate: dto.rate } : {}),
         });
         this.logTxn(user, 'CREATE', payment.uid,
           `دفع ${amt} ج لـ ${payment.party?.name ?? ''} من خزينة ${payment.treasury?.name ?? ''}`);
@@ -201,7 +190,6 @@ export class TransactionsService {
           return tx;
         }
 
-        const freight = await this.freightLink(dto, dir);
         if (target === 'external') {
           // مصروف خارجي — زي مصروف المخزن بس ببنود المجموعة الخارجية (من غير مخزن).
           this.requirePart(dto.treasuryId, 'الخزينة');
@@ -209,9 +197,8 @@ export class TransactionsService {
             ...eb, date, type: 'مصروف',
             category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
             treasury: { connect: { uid: dto.treasuryId } },
-            ...treasuryLeg, note: dto.note || freight?.note,
+            ...treasuryLeg, note: dto.note,
             ...(dto.manifestId ? { manifest: { connect: { uid: dto.manifestId } } } : {}),
-            ...freight?.data,
           });
           const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
           this.logTxn(user, 'CREATE', tx.uid,
@@ -226,10 +213,9 @@ export class TransactionsService {
             warehouse: { connect: { uid: dto.warehouseId } },
             category: dto.categoryId ? { connect: { uid: dto.categoryId } } : undefined,
             treasury: { connect: { uid: dto.treasuryId } },
-            ...treasuryLeg, note: dto.note || freight?.note,
+            ...treasuryLeg, note: dto.note,
             // تحميل/شفتنة مربوطة بعربية — بتظهر في تكاليف الشحن في كشفها.
             ...(dto.manifestId ? { manifest: { connect: { uid: dto.manifestId } } } : {}),
-            ...freight?.data,
           });
           const catNote = tx.category?.name ? ` (${tx.category.name})` : '';
           this.logTxn(user, 'CREATE', tx.uid,
@@ -265,22 +251,15 @@ export class TransactionsService {
       case EntryType.TRANSFER: {
         this.requirePart(dto.treasuryId, 'من حساب');
         this.requirePart(dto.treasuryId2, 'إلى حساب');
-        // تحويل بين عملتين بسعر الوكيل في تاريخ الحركة.
-        const [fromTr, toTr] = await Promise.all([
-          this.prisma.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { currency: true } }),
-          this.prisma.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId2 }, select: { currency: true } }),
-        ]);
-        const currencyMove = fromTr.currency !== toTr.currency;
-        const fxRate = currencyMove ? await requireAgentRate(this.prisma, date) : 0;
-        const received = !currencyMove ? amt : fromTr.currency === 'USD' ? amt * fxRate : amt / fxRate;
+        const received = dto.amount2 && dto.amount2 > 0 ? dto.amount2 : amt;
+        const currencyMove = received !== amt;
         const type = currencyMove ? 'تحويل عملة' : 'تحويل بين الخزائن';
         const transfer = await this.repo.create({
           ...eb, date, type,
           treasury: { connect: { uid: dto.treasuryId } },
           treasury2: { connect: { uid: dto.treasuryId2 } },
           cashOut: amt, cashIn2: received,
-          note: dto.note,
-          ...(currencyMove ? { agentPriced: true, exchangeRate: fxRate } : {}),
+          note: dto.rate ? `${dto.note || ''} (سعر: ${dto.rate})`.trim() : dto.note,
         });
         const recvNote = currencyMove ? ` (${received} مستلمة)` : '';
         this.logTxn(user, 'CREATE', transfer.uid,
@@ -325,9 +304,6 @@ export class TransactionsService {
           this.repo.findPartyByUid(dto.partyId!),
           this.repo.findPartyByUid(dto.partyId2!),
         ]);
-        if ((from.currency ?? 'EGP') !== (to.currency ?? 'EGP')) {
-          throw new BadRequestException('لا يمكن التحويل بين حساب بالدولار وحساب بالجنيه');
-        }
         const transferGroupId = crypto.randomUUID();
         // المُحوِّل (from) الفلوس تتسجّله (credit/له)، والمستلم (to) تتسجّل عليه (debit/عليه).
         // الرِجلين بيتعملوا ذرّيًا (createPair) عشان يستحيل يتحرّك طرف من غير التاني.
@@ -371,7 +347,6 @@ export class TransactionsService {
   async resolve(id: string, dto: ResolveDto, user?: any) {
     const txn = await this.repo.findByUid(id);
     if (!txn.pending) throw new BadRequestException('هذه الحركة ليست معلّقة');
-    if (txn.treasury?.uid) await this.checkPartyTreasury(dto.partyId, txn.treasury.uid);
     const fee = dto.transferFee != null ? dto.transferFee : (Number(txn.expAmt) || 0);
     const resolveGroupId = fee > 0 ? crypto.randomUUID() : undefined;
     const updated = await this.repo.updatePending(id, dto.partyId, Number(txn.cashIn), resolveGroupId);
@@ -396,15 +371,6 @@ export class TransactionsService {
     this.requireTreasuryAllowed(before.treasury?.uid, user);
     this.requireTreasuryAllowed(before.treasury2?.uid, user);
     if (dto.treasuryId) this.requireTreasuryAllowed(dto.treasuryId, user);
-    // نقل الحركة لطرف أو خزنة بعملة مختلفة ممنوع. تعديل المبلغ أو البيان فقط مسموح.
-    if (dto.partyId || dto.treasuryId) {
-      const partyUid = dto.partyId || before.party?.uid;
-      const treasuryUid = dto.treasuryId || before.treasury?.uid;
-      if (partyUid && treasuryUid) {
-        const hasRate = (Number(before.cashOut) || Number(before.cashIn) || 0) !== (Number(before.debit) || Number(before.credit) || 0);
-        await this.checkPartyTreasury(partyUid, treasuryUid, hasRate);
-      }
-    }
     const after = await this.repo.update(id, dto);
     const diff = this.diffTxn(before, after);
     this.logTxn(user, 'UPDATE', after.uid, `تعديل حركة: ${after.type}`, diff);
@@ -454,70 +420,6 @@ export class TransactionsService {
       await this.prisma.invoiceItem.update({ where: { id: t.itemId }, data: { freight: { increment: share } } });
     }
     return summary;
-  }
-
-  // يرجّع true لو الطرف والخزنة بنفس العملة.
-  private async checkPartyTreasury(partyUid: string, treasuryUid: string, hasRate = false) {
-    const [party, treasury] = await Promise.all([
-      this.prisma.party.findUnique({ where: { uid: partyUid }, select: { currency: true } }),
-      this.prisma.treasuryAccount.findUnique({ where: { uid: treasuryUid }, select: { currency: true } }),
-    ]);
-    if (!party || !treasury) return false;
-    assertCashCurrency(party.currency, treasury.currency, hasRate);
-    return party.currency === treasury.currency;
-  }
-
-  // فواتير الشراء التي فيها صنف بهذا الاسم، الأحدث أولاً.
-  async freightLines(search?: string) {
-    const words = normalizeAr(search ?? '').split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    const products = await this.prisma.product.findMany({ where: { service: false }, select: { id: true, name: true } });
-    const ids = products.filter((p) => { const n = normalizeAr(p.name); return words.every((w) => n.includes(w)); }).map((p) => p.id);
-    if (!ids.length) return [];
-    const items = await this.prisma.invoiceItem.findMany({
-      where: { productId: { in: ids }, invoice: { kind: 'PURCHASE', fake: false } },
-      select: {
-        qty: true,
-        product: { select: { uid: true, name: true, unit: true } },
-        invoice: { select: { uid: true, no: true, date: true, party: { select: { name: true } } } },
-      },
-      orderBy: [{ invoice: { date: 'desc' } }, { id: 'desc' }],
-      take: 200,
-    });
-    // صنف مكرر في نفس الفاتورة يظهر مرة واحدة بإجمالي كميته.
-    const rows = new Map<string, { invoiceId: string; invoiceNo: string; date: Date; supplierName: string; productId: string; productName: string; unit: string | null; qty: number }>();
-    for (const it of items) {
-      const key = `${it.invoice.uid}:${it.product.uid}`;
-      const row = rows.get(key);
-      if (row) { row.qty += it.qty; continue; }
-      rows.set(key, {
-        invoiceId: it.invoice.uid, invoiceNo: it.invoice.no, date: it.invoice.date, supplierName: it.invoice.party?.name ?? '',
-        productId: it.product.uid, productName: it.product.name, unit: it.product.unit ?? null, qty: it.qty,
-      });
-    }
-    return [...rows.values()].slice(0, 50);
-  }
-
-  // تحميل الناولون على (فاتورة شراء، صنف). المبلغ بالجنيه ويدخل تكلفة الصنف.
-  private async freightLink(dto: PostEntryDto, dir: 'in' | 'out') {
-    if (!dto.freightInvoiceId && !dto.freightProductId) return null;
-    if (dir !== 'out' || (dto.cashTarget !== 'external' && dto.cashTarget !== 'warehouse')) {
-      throw new BadRequestException('تحميل الناولون على صنف متاح في صرف المصاريف فقط');
-    }
-    if (!dto.freightInvoiceId || !dto.freightProductId) throw new BadRequestException('اختر الصنف وفاتورة الشراء');
-    const item = await this.prisma.invoiceItem.findFirst({
-      where: { product: { uid: dto.freightProductId }, invoice: { uid: dto.freightInvoiceId, kind: 'PURCHASE', fake: false } },
-      select: { productId: true, invoiceId: true, product: { select: { name: true } }, invoice: { select: { no: true } } },
-    });
-    if (!item) throw new BadRequestException('الصنف غير موجود في فاتورة الشراء المحددة');
-    const treasury = dto.treasuryId
-      ? await this.prisma.treasuryAccount.findUnique({ where: { uid: dto.treasuryId }, select: { currency: true } })
-      : null;
-    if (treasury?.currency === 'USD') throw new BadRequestException('تحميل الناولون على صنف يتم من خزنة بالجنيه');
-    return {
-      note: `ناولون داخلي على ${item.product.name} — فاتورة شراء #${item.invoice.no}`,
-      data: { freightInvoice: { connect: { id: item.invoiceId } }, freightProduct: { connect: { id: item.productId } } },
-    };
   }
 
   private requirePart(value: string | undefined, label: string) {

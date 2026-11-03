@@ -57,7 +57,7 @@ export class TransactionsRepository {
   }
 
   findPartyByUid(uid: string) {
-    return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, name: true, currency: true } });
+    return this.prisma.party.findUniqueOrThrow({ where: { uid }, select: { id: true, name: true } });
   }
 
   findTreasuryByUid(uid: string) {

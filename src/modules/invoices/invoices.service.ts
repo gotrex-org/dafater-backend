@@ -9,17 +9,8 @@ import { BalancesService } from '../balances/balances.service';
 export class InvoicesService {
   constructor(private repo: InvoicesRepository, private balances: BalancesService) {}
 
-  async findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string, includeHidden = false) {
-    const result = await this.repo.findAll(q, kind, partyId, includeHidden);
-    // فاتورة دولار تُفتح من القائمة مباشرة، فلازم تحمل سعرها من دورة الدولار.
-    if (!result.data.some((inv: any) => inv.currency === 'USD')) return result;
-    const { byInvoice } = await this.balances.usdFifo();
-    return {
-      ...result,
-      data: result.data.map((inv: any) =>
-        inv.currency === 'USD' ? { ...inv, fifo: byInvoice.get(inv.id) ?? { usd: 0, egp: 0, pricedUsd: 0, unpricedUsd: 0, rate: 0 } } : inv,
-      ),
-    };
+  findAll(q: PaginationQueryDto, kind?: InvoiceKind, partyId?: string, includeHidden = false) {
+    return this.repo.findAll(q, kind, partyId, includeHidden);
   }
 
   /** أرشفة/استعادة فاتورة — إخفاء من القوايم بس، الحركات والأرقام ما بتتلمسش. */

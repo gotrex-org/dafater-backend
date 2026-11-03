@@ -36,8 +36,7 @@ export class ReportsService {
   private async expenseRows(from?: string, to?: string) {
     const date = this.range(from, to);
     return this.prisma.transaction.findMany({
-      // الناولون المحمّل على صنف داخل تكلفته (avgCost)، فلا يُحسب مصروفاً مرة ثانية.
-      where: { type: { in: EXPENSE_TYPES }, freightInvoiceId: null, ...(date ? { date } : {}) },
+      where: { type: { in: EXPENSE_TYPES }, ...(date ? { date } : {}) },
       select: {
         type: true, activity: true, shippingPct: true, manifestId: true,
         cashOut: true, cashIn: true, expAmt: true,
@@ -52,6 +51,8 @@ export class ReportsService {
    * أو سعر التقييم اليدوي لو متحدد على الصنف — نفس تقييم المخزون.
    */
   async tradeReport(from?: string, to?: string) {
+    // مستحقات التصفية الثابتة جزء من تكلفة الأصناف — تتحدّث الأول عشان تعديلات الفواتير توصل
+    await this.settlement.syncAllFixed();
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
       where: { fake: false, ...(date ? { date } : {}) },
@@ -100,30 +101,23 @@ export class ReportsService {
     // البيع الخارجي: أصنافه تجارة زي فاتورة البيع، وتكلفتها سعر الشراء من المورد (بالجنيه)
     // + الشاي والعمولة على البند. الناولون بيتحسب هنا لو العملية مش على عربية — لو على
     // عربية بيتخصم من ربح العربية في تقرير الشحن، فمايتحسبش مرتين.
-    // المورد الدولاري: التكلفة بسعر دفعات الوكيل اللي قابلت حركة «شراء خارجي» (FIFO).
-    // لو جزء منها غير مسعّر لسه، العملية كلها بتطلع من التقرير بدل ما تتحسب بتكلفة
-    // ناقصة، وبترجع لوحدها أول ما الوكيل يورّد — وعددها بيرجع في dealsWithoutRate.
+    // المورد الدولاري من غير سعر صرف تكلفته مش معروفة، فالعملية كلها بتطلع من التقرير
+    // بدل ما تتحسب بتكلفة صفر — وعددها بيرجع في dealsWithoutRate.
     const deals = await this.prisma.deal.findMany({
       where: date ? { date } : {},
       select: {
+        exchangeRate: true,
         supplier: { select: { currency: true } },
-        transactions: { where: { type: 'شراء خارجي' }, select: { id: true } },
         _count: { select: { manifests: true } },
         items: { select: { qty: true, price: true, buyPrice: true, freight: true, tea: true, commission: true, product: { select: { uid: true, name: true, unit: true, service: true } } } },
       },
     });
     let dealsWithoutRate = 0;
-    const dealFifo = deals.some((d) => d.supplier.currency === 'USD') ? await this.balances.usdFifo() : null;
     for (const d of deals) {
       const goods = d.items.filter((it) => !it.product?.service);
       if (!goods.length) continue;
-      let rate = 1;
-      if (d.supplier.currency === 'USD') {
-        const legs = d.transactions.map((t) => dealFifo?.byTx.get(t.id));
-        if (legs.some((l) => (l?.unpricedUsd ?? 0) > 1e-9)) { dealsWithoutRate += 1; continue; }
-        const priced = legs.reduce((s, l) => s + (l?.pricedUsd ?? 0), 0);
-        rate = priced > 0 ? legs.reduce((s, l) => s + (l?.egp ?? 0), 0) / priced : 0;
-      }
+      const rate = d.supplier.currency === 'USD' ? d.exchangeRate || 0 : 1;
+      if (!(rate > 0)) { dealsWithoutRate += 1; continue; }
       salesCount += 1;
       for (const it of goods) {
         const sale = it.qty * it.price;
@@ -137,6 +131,22 @@ export class ReportsService {
         row.qty += it.qty; row.sales += sale; row.cost += c;
         byProduct.set(key, row);
       }
+    }
+
+    // مستحقات التصفية الثابتة على أصناف البيع الخارجي: جزء من تكلفة الصنف في العملية.
+    // (أصناف فواتير الشراء مستحقها داخل متوسط التكلفة نفسه — balances.avgCost.)
+    const dealDues = await this.prisma.transaction.findMany({
+      where: { type: LEDGER_TYPES.due, partnerItem: { is: { deal: { is: date ? { date } : {} } } } },
+      select: { credit: true, debit: true, partnerItem: { select: { product: { select: { uid: true, name: true, unit: true } } } } },
+    });
+    for (const t of dealDues) {
+      const p = t.partnerItem?.product;
+      if (!p) continue;
+      const c = (t.credit || 0) - (t.debit || 0);
+      cogs += c;
+      const row = byProduct.get(p.uid) ?? { name: p.name, unit: p.unit, qty: 0, sales: 0, cost: 0 };
+      row.cost += c;
+      byProduct.set(p.uid, row);
     }
 
     let salesReturns = 0, returnsCost = 0;
@@ -502,20 +512,16 @@ export class ReportsService {
       (agg._sum.cashOut || 0) - (agg._sum.cashIn || 0);
 
     const opAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف', freightInvoiceId: null, ...(date ? { date } : {}), OR: [{ categoryId: null }, { category: { addsToGoods: false } }] },
+      where: { type: 'مصروف', ...(date ? { date } : {}), OR: [{ categoryId: null }, { category: { addsToGoods: false } }] },
       _sum: { cashOut: true, cashIn: true },
     });
     const goodsAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف', ...(date ? { date } : {}), OR: [{ category: { addsToGoods: true } }, { freightInvoiceId: { not: null } }] },
+      where: { type: 'مصروف', ...(date ? { date } : {}), category: { addsToGoods: true } },
       _sum: { cashOut: true, cashIn: true },
     });
     // مصاريف المخزن (إيجار/مرتبات/تحميل/تخليص) — تشغيلية
     const whAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف مخزن', freightInvoiceId: null, ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    const whFreightAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف مخزن', freightInvoiceId: { not: null }, ...(date ? { date } : {}) },
+      where: { type: 'مصروف مخزن', ...(date ? { date } : {}) },
       _sum: { cashOut: true, cashIn: true },
     });
     // مصاريف بضاعة نقدية (شامل الناولون والشاي) — تتضاف على التكلفة. نستثني حركات البيع
@@ -532,7 +538,7 @@ export class ReportsService {
 
     const warehouseExpenses = net(whAgg);
     const expenses = net(opAgg) + warehouseExpenses;   // مصاريف تشغيلية (شخصية + مخزن)
-    const goodsExpenses = net(goodsAgg) + net(goodsCashAgg) + net(whFreightAgg); // مصاريف على البضاعة
+    const goodsExpenses = net(goodsAgg) + net(goodsCashAgg); // مصاريف على البضاعة
     const settlement = net(settleAgg);                 // تسويات نقدية
     // مستحقات أسماء التصفية الثابتة على أصنافهم (له في حسابه، من غير خزنة) — تتخصم من الصافي
     const duesAgg = await this.prisma.transaction.aggregate({
@@ -541,18 +547,19 @@ export class ReportsService {
     });
     const partnerDues = (duesAgg._sum.credit || 0) - (duesAgg._sum.debit || 0);
     const revenue = s.netSales;
-    const cost = (s.purchases - s.purchaseReturns) + goodsExpenses;
+    // مستحقات التصفية على تكلفة البضاعة (الكرتونة بـ 5 وله 1 → 6)، مش مصروف بعد الربح
+    const cost = (s.purchases - s.purchaseReturns) + goodsExpenses + partnerDues;
     const grossProfit = revenue - cost;
     return {
       revenue,
-      cost,             // net purchases + مصاريف البضاعة
+      cost,             // net purchases + مصاريف البضاعة + مستحقات التصفية
       goodsExpenses,
       grossProfit,
       expenses,         // مصاريف تشغيلية (شخصية + مخزن)
       warehouseExpenses, // مصاريف المخزن لوحدها (جزء من expenses)
       settlement,       // تسويات نقدية
-      partnerDues,      // مستحقات التصفية الثابتة
-      netProfit: grossProfit - expenses - settlement - partnerDues,
+      partnerDues,      // مستحقات التصفية الثابتة (جزء من cost)
+      netProfit: grossProfit - expenses - settlement,
     };
   }
 

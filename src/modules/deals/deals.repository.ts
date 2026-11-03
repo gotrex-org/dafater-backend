@@ -4,12 +4,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { INVOICE_CHARGES_TX_TYPE } from '../../common/activity';
-import { assertCashCurrency } from '../../common/currency-guard';
 import { CreateDealDto, DealCommissionDto } from './dto/deals.dto';
 
 const DEAL_INCLUDE = {
   client: true, supplier: true, treasury: true,
-  items: { orderBy: { id: 'asc' }, include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } },
+  items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } },
   charges: { orderBy: { id: 'asc' }, include: { chargeType: { select: { uid: true, name: true } }, manifest: { select: { uid: true, no: true } } } },
   manifests: { select: { uid: true, no: true, date: true, vehicleNo: true, driverName: true }, orderBy: { date: 'asc' } },
   driverTrip: { select: { uid: true, driverName: true, departureDate: true } },
@@ -44,9 +43,7 @@ export class DealsRepository {
       const { client, supplier, treasury, commissionParty, no } = await this.resolve(tx, dto, null);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildDealItems(tx, dto.items);
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
-      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto);
-      if (treasury && paidIn > 0) assertCashCurrency(client.currency, treasury.currency);
-      if (treasury && paidOut > 0) assertCashCurrency(supplier.currency, treasury.currency);
+      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto, supplier);
 
       const deal = await tx.deal.create({
         data: {
@@ -72,18 +69,14 @@ export class DealsRepository {
   }
 
   async update(uid: string, dto: CreateDealDto, createdById?: number) {
-    const existing = await this.prisma.deal.findUniqueOrThrow({ where: { uid }, select: { id: true, no: true, paidIn: true, paidOut: true, treasuryId: true, clientId: true, supplierId: true } });
+    const existing = await this.prisma.deal.findUniqueOrThrow({ where: { uid }, select: { id: true, no: true } });
     const dealId = existing.id;
 
     return this.prisma.$transaction(async (tx) => {
       const { client, supplier, treasury, commissionParty, no } = await this.resolve(tx, dto, existing.no);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildDealItems(tx, dto.items);
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
-      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto);
-      // مبلغ قديم لم يتغيّر يبقى كما هو، حتى يمكن تعديل باقي العملية.
-      const sameTreasury = existing.treasuryId === (treasury?.id ?? null);
-      if (treasury && paidIn > 0 && !(sameTreasury && existing.paidIn === paidIn && existing.clientId === client.id)) assertCashCurrency(client.currency, treasury.currency);
-      if (treasury && paidOut > 0 && !(sameTreasury && existing.paidOut === paidOut && existing.supplierId === supplier.id)) assertCashCurrency(supplier.currency, treasury.currency);
+      const { date, paidIn, paidOut, nawlon, sellTotal, buyTotal, chargesTotal, exchangeRate } = this.amounts(dto, supplier);
 
       // عمولة الصفقة على مستوى العملية (اللي اتسجّلت من شاشة الصفقات updateCommission) ليها بيان
       // "commission صفقة" — نحفظها قبل المسح ونعيد ترحيلها، وإلا تعديل الصفقة كان بيلغيها.
@@ -148,10 +141,10 @@ export class DealsRepository {
       throw new BadRequestException('أضف صنفاً أو بند شحن واحداً على الأقل');
     }
     const [client, supplier, treasury] = await Promise.all([
-      tx.party.findUniqueOrThrow({ where: { uid: dto.clientId }, select: { id: true, currency: true } }),
+      tx.party.findUniqueOrThrow({ where: { uid: dto.clientId }, select: { id: true } }),
       tx.party.findUniqueOrThrow({ where: { uid: dto.supplierId }, select: { id: true, currency: true } }),
       dto.treasuryId
-        ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true, currency: true } })
+        ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
         : Promise.resolve(null),
     ]);
     const commissionParty = dto.commissionPartyId
@@ -207,15 +200,15 @@ export class DealsRepository {
     return { create, resolved };
   }
 
-  private amounts(dto: CreateDealDto) {
+  private amounts(dto: CreateDealDto, supplier: { currency: string }) {
     const chargesTotal = (dto.charges ?? []).reduce((s, c) => s + (c.qty ?? 1) * c.price, 0);
     return {
       date: new Date(dto.date), paidIn: dto.paidIn || 0, paidOut: dto.paidOut || 0, nawlon: dto.nawlon || 0,
       sellTotal: dto.items.reduce((s, it) => s + it.qty * it.price, 0),
       buyTotal: dto.items.reduce((s, it) => s + it.qty * (it.buyPrice || 0), 0),
       chargesTotal,
-      // العملية لا تحمل سعراً خاصاً بها: شراء المورد الدولاري يتسعّر من دفعات الوكيل (FIFO).
-      exchangeRate: null,
+      // سعر الصرف بيتحفظ بس لما المورد دولاري — المورد بالمصري مالوش سعر صرف.
+      exchangeRate: supplier.currency === 'USD' && dto.exchangeRate && dto.exchangeRate > 0 ? dto.exchangeRate : null,
     };
   }
 

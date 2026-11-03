@@ -51,9 +51,6 @@ export class PostEntryDto {
   @IsOptional() @IsString() clientNote?: string; // ملاحظة تظهر للعميل في بوابته بدل "استلام نقدية"
   // مصروف اتضاف من تاب عربية جوّه الفاتورة — بيتثبّت عليها فما بيسيبهاش لو التاريخ اتغيّر.
   @IsOptional() @IsString() manifestId?: string;
-  // ناولون داخلي محمّل على صنف من فاتورة شراء (اختياري)
-  @IsOptional() @IsString() freightInvoiceId?: string;
-  @IsOptional() @IsString() freightProductId?: string;
 }
 
 export class UpdateTransactionDto {

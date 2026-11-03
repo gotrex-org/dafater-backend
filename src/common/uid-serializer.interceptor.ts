@@ -39,8 +39,6 @@ const FK_RELATIONS: Record<string, string> = {
   priceListId: 'priceList',
   partnerId: 'partner',
   chargeTypeId: 'chargeType',
-  freightInvoiceId: 'freightInvoice',
-  freightProductId: 'freightProduct',
 };
 
 @Injectable()

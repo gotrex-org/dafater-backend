@@ -69,6 +69,18 @@ export class BalancesRepository {
     return out;
   }
 
+  /**
+   * مستحقات التصفية الثابتة على صنف من فواتير الشراء (حركات «مستحق تصفية» في حساب
+   * الاسم). بتتحمّل على تكلفة الصنف زي الناولون والشاي — شوف SettlementService.syncLedger.
+   */
+  private async settlementDues(productId: number) {
+    const agg = await this.prisma.transaction.aggregate({
+      where: { type: 'مستحق تصفية', partnerItem: { is: { productId, invoice: { is: { kind: 'PURCHASE', fake: false } } } } },
+      _sum: { credit: true, debit: true },
+    });
+    return (agg._sum.credit || 0) - (agg._sum.debit || 0);
+  }
+
   async allPartyBalances(): Promise<Record<number, number>> {
     const parties = await this.prisma.party.findMany();
     const grouped = await this.prisma.transaction.groupBy({
@@ -152,7 +164,8 @@ export class BalancesRepository {
       select: { qty: true, price: true, freight: true, tea: true, commission: true, invoice: { select: { id: true, currency: true } } },
     });
     let totalQty = 0;
-    let totalAmt = 0;
+    // التصفية الثابتة: مستحق الاسم على الصنف جزء من تكلفته (الكرتونة بـ 5 وله 1 → 6)
+    let totalAmt = await this.settlementDues(productId);
     for (const it of items) {
       // Landed cost: goods + freight (ناولون) + tea (شاي) + commission (عمولة) added to the item.
       const extras = (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
@@ -170,12 +183,6 @@ export class BalancesRepository {
       totalQty += it.qty;
       totalAmt += it.qty * it.price + extras;
     }
-    // ناولون داخلي من صرف النقدية محمّل على الصنف من فاتورة شراء.
-    const linked = await this.prisma.transaction.aggregate({
-      where: { freightProductId: productId, freightInvoice: { kind: 'PURCHASE', fake: false } },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    totalAmt += (linked._sum.cashOut || 0) - (linked._sum.cashIn || 0);
     return totalQty > 0 ? totalAmt / totalQty : 0;
   }
 

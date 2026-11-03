@@ -319,7 +319,6 @@ model Product {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  freightTxs Transaction[] @relation("TxFreightProduct")
 }
 
 enum ExpenseGroup {
@@ -423,8 +422,6 @@ model Transaction {
   // EGP-per-USD rate for movements on a USD party (from the invoice or daily entry);
   // 0 when not applicable. Lets the trial balance weight each party's average rate.
   exchangeRate Float @default(0)
-  // المبلغ محسوب بسعر الوكيل في تاريخ الحركة، ويُعاد حسابه لو تعدّل سعر عند الوكيل.
-  agentPriced Boolean @default(false)
 
   // نشاط الحركة (تجارة/شحن/مشترك). بيتحدّد تلقائي عند الإنشاء — شوف common/activity.ts.
   activity    Activity @default(TRADE)
@@ -461,15 +458,6 @@ model Transaction {
   // مهما اتغيّر تاريخه (بعكس المصاريف اللي التاب بياخدها بالنافذة الزمنية).
   manifest   Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
   manifestId Int?
-
-  // ناولون داخلي محمّل على صنف من فاتورة شراء. المرجع (الفاتورة، الصنف) وليس سطر الفاتورة،
-  // لأن تعديل الفاتورة يعيد بناء أسطرها. المبلغ يدخل تكلفة الصنف.
-  freightInvoice   Invoice? @relation("TxFreightInvoice", fields: [freightInvoiceId], references: [id], onDelete: SetNull)
-  freightInvoiceId Int?
-  freightProduct   Product? @relation("TxFreightProduct", fields: [freightProductId], references: [id], onDelete: SetNull)
-  freightProductId Int?
-
-  @@index([freightProductId])
 
   createdBy   User? @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdById Int?
@@ -560,7 +548,6 @@ model Invoice {
   @@index([hidden])
   // رقم فاتورة فريد لكل طرف — يمنع تكرار الرقم من تسابق nextNo (اقرأ max ثم +1).
   @@unique([partyId, no])
-  freightTxs Transaction[] @relation("TxFreightInvoice")
 }
 
 model InvoiceItem {
