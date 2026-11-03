@@ -587,6 +587,8 @@ export class SettlementService {
       rawShare: share,
       rawCapital: capital,
       rawSales: usdNoRate ? null : salesValue,
+      // صف PartnerVehicle — مفتاح حركة نصيبه في حسابه (syncLedger)
+      rowId: vehicleRow?.id ?? null,
       note: vehicleRow?.note ?? null,
       itemCount: lines.length,
       unpricedCount: unpriced,
@@ -654,7 +656,7 @@ export class SettlementService {
           pending: list.filter((v) => !v.approved).length,
         },
         supplierAccount,
-        fixed: list.map(({ rawAmount, rowId, ...rest }) => rest),
+        fixed: this.forViewer(list, me),
         vehicles: [],
       };
     }
@@ -663,6 +665,8 @@ export class SettlementService {
       this.vehicles(partner, true),
       this.repo.capitalMovements(partner.id),
     ]);
+    // نصيبه من كل فاتورة في حسابه — يتحدّث مع أي تعديل في الفواتير أو قوائم الأسعار
+    await this.syncLedger(partner);
     // نجمع الخام ونقرّب مرة واحدة، حتى لا يختلف مجموع الصفوف عن الإجمالي بقروش
     const counted = list.filter((v) => v.rawShare !== null);
     const totals = {
@@ -686,7 +690,7 @@ export class SettlementService {
       fixed: null,
       supplierAccount,
       // الجدول لا يحتاج تفاصيل الأصناف — تُجلب بالضغط على العربية
-      vehicles: list.map(({ lines, rawProfit, rawShare, rawCapital, rawSales, ...rest }) => rest),
+      vehicles: list.map(({ lines, rawProfit, rawShare, rawCapital, rawSales, rowId, ...rest }) => rest),
     };
   }
 
@@ -928,7 +932,7 @@ export class SettlementService {
   }
 
   /**
-   * إضافة أو نقص رأس مال على القديم — للمدير فقط. في التصفية الثابتة الحركة يا إما
+   * إضافة أو نقص رأس مال على القديم — للمدير فقط. الحركة يا إما
    * من خزنة (الفلوس بتدخل أو تخرج فعلاً)، يا إما «تسوية» على حسابه من غير خزنة
    * (`settle`) — والاتنين في حسابه وكشفه (شوف syncLedger).
    */
@@ -939,7 +943,7 @@ export class SettlementService {
   ) {
     const partner = await this.access(partnerUid, me);
     if (!dto.amount) throw new BadRequestException('اكتب مبلغ الإضافة أو النقص');
-    const treasuryId = dto.settle ? null : await this.fixedTreasury(partner, dto.treasuryId);
+    const treasuryId = dto.settle ? null : await this.moneyTreasury(dto.treasuryId);
     await this.ledger.createCapitalMovement({
       partnerId: partner.id,
       date: utcDay(dto.date),
@@ -952,9 +956,11 @@ export class SettlementService {
     return this.capital(partnerUid, me);
   }
 
-  /** التصفية الثابتة: خزنة الحركة بالجنيه (أو تسوية في رأس المال). برأس المال بدون خزنة. */
-  private async fixedTreasury(partner: PartnerRow, treasuryUid?: string) {
-    if (partner.shareBasis !== 'FIXED') return null;
+  /**
+   * خزنة حركة الفلوس (بالطريقتين): الفلوس اللي بياخدها أو بيجيبها لازم تخرج أو تدخل
+   * من خزنة بالجنيه — إلا إضافة أو نقص رأس المال، ممكن تبقى تسوية (`settle`).
+   */
+  private async moneyTreasury(treasuryUid?: string) {
     if (!treasuryUid) throw new BadRequestException('اختر الخزنة أو التسوية');
     return this.ledger.egpTreasuryId(treasuryUid);
   }
@@ -986,7 +992,7 @@ export class SettlementService {
     };
   }
 
-  /** تسجيل دفعة للاسم — للمدير فقط. في التصفية الثابتة سحب من خزنة على حسابه. */
+  /** تسجيل سحب للاسم — للمدير فقط. يخرج من خزنة ويتسجل عليه في حسابه. */
   async addPayment(
     partnerUid: string,
     dto: { date: string; amount: number; note?: string; treasuryId?: string },
@@ -994,7 +1000,7 @@ export class SettlementService {
   ) {
     const partner = await this.access(partnerUid, me);
     if (!(dto.amount > 0)) throw new BadRequestException('اكتب مبلغ الدفعة');
-    const treasuryId = await this.fixedTreasury(partner, dto.treasuryId);
+    const treasuryId = await this.moneyTreasury(dto.treasuryId);
     await this.ledger.createPayment({
       partnerId: partner.id,
       date: utcDay(dto.date),
@@ -1058,6 +1064,7 @@ export class SettlementService {
         }));
     } else {
       const list = await this.vehicles(partner, true);
+      await this.syncLedger(partner);
       // الفاتورة غير المحسوبة (صنف بدون سعر، أو لا صنف مسعّر فيها) لا تُنتج
       // حركة — سطر بصفر يملأ الكشف بما لا معنى له، والتنبيه الأحمر في تاب
       // التصفية هو موضعه
@@ -1075,10 +1082,10 @@ export class SettlementService {
     const dues = rows.reduce((s, r) => s + r.amount, 0);
 
     const moves = await this.repo.capitalMovements(partner.id);
-    // ثابتة: الإضافة لرأس المال «مدفوعات» دفعها، والنقص «سحب» زي السحب العادي
+    // الإضافة لرأس المال «مدفوعات» دفعها، والنقص «سحب» زي السحب العادي (بالطريقتين)
     const paidIn = partner.capital + moves.reduce((s, m) => s + Math.max(m.amount, 0), 0);
     const capitalOut = moves.reduce((s, m) => s + Math.max(-m.amount, 0), 0);
-    if (fixed) {
+    {
       for (const m of moves) {
         rows.push({
           date: m.date,
@@ -1097,20 +1104,20 @@ export class SettlementService {
     for (const p of paymentRows) {
       rows.push({
         date: p.date,
-        label: fixed ? 'سحب' : 'دفعة',
+        label: 'سحب',
         source: p.note || (p.createdBy?.name ? `سجّلها ${p.createdBy.name}` : 'دفعة مستلمة'),
         amount: -p.amount,
         kind: 'PAYMENT',
         id: p.uid,
       });
     }
-    const paid = paymentRows.reduce((s, p) => s + p.amount, 0) + (fixed ? capitalOut : 0);
+    const paid = paymentRows.reduce((s, p) => s + p.amount, 0) + capitalOut;
 
     // في نفس اليوم: المدفوعات ثم التصفية ثم السحب، فالرصيد يقرأ صحيحاً
     const order = { CAPITAL: 0, DUE: 1, PAYMENT: 2 };
     rows.sort((a, b) => (a.date.getTime() - b.date.getTime()) || order[a.kind] - order[b.kind]);
     // رأس المال الافتتاحي أول سطر في الكشف دايماً
-    if (fixed && partner.capital) {
+    if (partner.capital) {
       rows.unshift({
         date: partner.createdAt, label: 'مدفوعات', source: 'رأس المال الافتتاحي',
         amount: partner.capital, kind: 'CAPITAL',
@@ -1133,14 +1140,14 @@ export class SettlementService {
 
     return {
       partner: this.present(partner),
-      /** ثابتة: المدفوعات (الافتتاحي + الإضافات). برأس المال: رأس المال الحالي */
-      capital: r2(fixed ? paidIn : paidIn - capitalOut),
+      /** المدفوعات (رأس المال الافتتاحي + الإضافات) */
+      capital: r2(paidIn),
       /** إجمالي التصفية (المستحق) من الأصناف أو الفواتير المحسوبة */
       dues: r2(dues),
-      /** ثابتة: إجمالي السحب (السحب + النقص من رأس المال). برأس المال: المدفوع له */
+      /** إجمالي السحب (السحب + النقص من رأس المال) */
       paid: r2(paid),
-      /** الرصيد له: ثابتة = المدفوعات + التصفية − السحب، برأس المال = المستحق − المدفوع */
-      total: r2((fixed ? paidIn : 0) + dues - paid),
+      /** الرصيد له = المدفوعات + التصفية − السحب — نفس رصيد حسابه في البرنامج */
+      total: r2(paidIn + dues - paid),
       entries,
     };
   }
@@ -1183,23 +1190,21 @@ export class SettlementService {
   // ------------------------ حساب الاسم في البرنامج ------------------------
 
   /**
-   * التصفية الثابتة جوه حسابات البرنامج: للاسم حساب (Party role = PARTNER) فيه
+   * التصفية جوه حسابات البرنامج (بالطريقتين): للاسم حساب (Party role = PARTNER) فيه
    *   رأس المال الافتتاحي  → رصيد افتتاحي له
-   *   إضافة / نقص رأس مال  → له / عليه، ودخول / خروج من الخزنة المختارة
+   *   إضافة / نقص رأس مال  → له / عليه، ودخول / خروج من الخزنة المختارة (أو تسوية)
    *   سحب (دفعة)           → عليه، وخروج من الخزنة
-   *   مستحق صنف موافق عليه → له (مصروف بدون خزنة)، ويتخصم من صافي الأرباح والخسائر
-   * الحركات بتتبني من بيانات التصفية بعد أي تعديل وعند فتح التصفية، فتعديل فاتورة
-   * الشراء نفسها بيوصل للحساب أول ما التصفية أو الأرباح والخسائر تتفتح.
-   * الاسم اللي مابقاش تصفية ثابتة حسابه بيرجع فاضي.
+   *   ثابتة: مستحق صنف موافق عليه → له (بدون خزنة)، وعلى تكلفة الصنف
+   *   برأس المال: نصيبه من صافي ربح فاتورة → له (أو عليه لو خسارة)، ويتخصم من صافي الربح
+   * الحركات بتتبني من بيانات التصفية بعد أي تعديل وعند فتح التصفية، فتعديل الفاتورة
+   * نفسها بيوصل للحساب أول ما التصفية أو التقارير تتفتح.
    */
   async syncLedger(partner: PartnerRow, items?: Awaited<ReturnType<SettlementService['fixedItems']>>) {
-    if (partner.shareBasis !== 'FIXED') {
-      if (partner.partyId) await this.ledger.clear(partner.partyId);
-      return;
-    }
+    const fixed = partner.shareBasis === 'FIXED';
     const partyId = await this.ledger.ensureParty(partner);
-    const [list, moves, payments] = await Promise.all([
-      items ?? this.fixedItems(partner),
+    const [list, vehicles, moves, payments] = await Promise.all([
+      fixed ? (items ?? this.fixedItems(partner)) : Promise.resolve([]),
+      fixed ? Promise.resolve([]) : this.vehicles(partner, true),
       this.ledger.capitalRows(partner.id),
       this.ledger.paymentRows(partner.id),
     ]);
@@ -1251,12 +1256,28 @@ export class SettlementService {
         createdById: null,
       });
     }
+    // نفس شرط سطر الكشف: الفاتورة غير المحسوبة مالهاش حركة
+    for (const v of vehicles) {
+      if (v.rowId == null || v.rawShare === null || !(v.rawCapital > 0)) continue;
+      const a = r2(Math.abs(v.rawShare));
+      if (!a) continue;
+      rows.push({
+        ...base,
+        partnerVehicleId: v.rowId,
+        type: LEDGER_TYPES.share,
+        date: v.date,
+        treasuryId: null,
+        ...(v.rawShare > 0 ? { credit: a } : { debit: a }),
+        note: `${v.vehicleNo ? `عربية ${v.vehicleNo}` : `فاتورة #${v.invoiceNo}`}: صافي ربح ${r2(v.rawProfit ?? 0)} × ${v.percent}%`,
+        createdById: null,
+      });
+    }
     await this.ledger.apply(partyId, rows);
   }
 
-  /** كل أسماء التصفية الثابتة — قبل الأرباح والخسائر عشان تعديلات الفواتير توصل. */
+  /** كل أسماء التصفية — قبل التقارير عشان تعديلات الفواتير توصل لحساباتهم. */
   async syncAllFixed() {
-    for (const p of await this.ledger.fixedPartners()) {
+    for (const p of await this.ledger.allPartners()) {
       await this.syncLedger(await this.repo.partnerByUid(p.uid));
     }
   }
@@ -1267,7 +1288,7 @@ export class SettlementService {
     const list = await this.vehicles(partner, true);
     const found = list.find((v) => v.id === invoiceUid);
     if (!found) throw new NotFoundException('هذه العربية غير محددة في التصفية');
-    const { rawProfit, rawShare, rawCapital, rawSales, ...rest } = found;
+    const { rawProfit, rawShare, rawCapital, rawSales, rowId, ...rest } = found;
     return rest;
   }
 
@@ -1279,7 +1300,7 @@ export class SettlementService {
     const partner = await this.access(partnerUid, me);
     this.requireCapitalBasis(partner);
     const list = await this.vehicles(partner, false);
-    return list.map(({ lines, rawProfit, rawShare, rawCapital, rawSales, ...rest }) => rest);
+    return list.map(({ lines, rawProfit, rawShare, rawCapital, rawSales, rowId, ...rest }) => rest);
   }
 
   private requireCapitalBasis(partner: PartnerRow) {

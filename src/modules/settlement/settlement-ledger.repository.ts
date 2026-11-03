@@ -2,11 +2,14 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
-/** أنواع حركات التصفية الثابتة في حساب الاسم. */
+/** أنواع حركات التصفية في حساب الاسم. */
 export const LEDGER_TYPES = {
   capital: 'رأس مال تصفية',
   payment: 'سحب تصفية',
+  // ثابتة: مستحق صنف — على تكلفة الصنف
   due: 'مستحق تصفية',
+  // برأس المال: نصيبه من صافي ربح فاتورة (ممكن يبقى خسارة) — بيتخصم من صافي الربح
+  share: 'نصيب تصفية',
 } as const;
 
 /** حركة مطلوبة في حساب الاسم — مربوطة بمصدرها في التصفية بمفتاح واحد بس. */
@@ -14,6 +17,7 @@ export interface LedgerRow {
   partnerItemId?: number;
   partnerCapitalId?: number;
   partnerPaymentId?: number;
+  partnerVehicleId?: number;
   type: string;
   date: Date;
   treasuryId: number | null;
@@ -26,15 +30,24 @@ export interface LedgerRow {
   createdById: number | null;
 }
 
-const keyOf = (r: { partnerItemId?: number | null; partnerCapitalId?: number | null; partnerPaymentId?: number | null }) =>
-  r.partnerItemId ? `i${r.partnerItemId}` : r.partnerCapitalId ? `c${r.partnerCapitalId}` : `p${r.partnerPaymentId}`;
+const keyOf = (r: {
+  partnerItemId?: number | null; partnerCapitalId?: number | null;
+  partnerPaymentId?: number | null; partnerVehicleId?: number | null;
+}) =>
+  r.partnerItemId ? `i${r.partnerItemId}`
+  : r.partnerCapitalId ? `c${r.partnerCapitalId}`
+  : r.partnerVehicleId ? `v${r.partnerVehicleId}`
+  : `p${r.partnerPaymentId}`;
 
 const LINKED = {
-  OR: [{ partnerItemId: { not: null } }, { partnerCapitalId: { not: null } }, { partnerPaymentId: { not: null } }],
+  OR: [
+    { partnerItemId: { not: null } }, { partnerCapitalId: { not: null } },
+    { partnerPaymentId: { not: null } }, { partnerVehicleId: { not: null } },
+  ],
 };
 
 /**
- * حساب اسم التصفية الثابتة في البرنامج. الحركات هنا ظل لبيانات التصفية: بتتبني منها
+ * حساب اسم التصفية في البرنامج (بالطريقتين). الحركات هنا ظل لبيانات التصفية: بتتبني منها
  * (SettlementService.syncLedger) ومابتتكتبش بإيد — فالتعديل يتعمل من التصفية.
  */
 @Injectable()
@@ -103,7 +116,7 @@ export class SettlementLedgerRepository {
     const existing = await this.prisma.transaction.findMany({
       where: { partyId, ...LINKED },
       select: {
-        id: true, partnerItemId: true, partnerCapitalId: true, partnerPaymentId: true,
+        id: true, partnerItemId: true, partnerCapitalId: true, partnerPaymentId: true, partnerVehicleId: true,
         type: true, date: true, treasuryId: true, debit: true, credit: true,
         cashIn: true, cashOut: true, expAmt: true, note: true,
       },
@@ -128,8 +141,8 @@ export class SettlementLedgerRepository {
     if (ops.length) await this.prisma.$transaction(ops);
   }
 
-  fixedPartners() {
-    return this.prisma.partner.findMany({ where: { shareBasis: 'FIXED' }, select: { uid: true } });
+  allPartners() {
+    return this.prisma.partner.findMany({ select: { uid: true } });
   }
 
   async deleteParty(partyId: number) {

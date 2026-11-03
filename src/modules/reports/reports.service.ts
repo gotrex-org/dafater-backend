@@ -558,6 +558,12 @@ export class ReportsService {
       _sum: { credit: true, debit: true },
     });
     const partnerDues = (duesAgg._sum.credit || 0) - (duesAgg._sum.debit || 0);
+    // نصيب أسماء التصفية برأس المال من صافي ربح فواتيرهم — بيتخصم من الصافي (والخسارة بترجع)
+    const sharesAgg = await this.prisma.transaction.aggregate({
+      where: { type: LEDGER_TYPES.share, ...(date ? { date } : {}) },
+      _sum: { credit: true, debit: true },
+    });
+    const partnerShares = (sharesAgg._sum.credit || 0) - (sharesAgg._sum.debit || 0);
     const revenue = s.netSales;
     // مستحقات التصفية على تكلفة البضاعة (الكرتونة بـ 5 وله 1 → 6)، مش مصروف بعد الربح
     const cost = (s.purchases - s.purchaseReturns) + goodsExpenses + partnerDues;
@@ -571,7 +577,8 @@ export class ReportsService {
       warehouseExpenses, // مصاريف المخزن لوحدها (جزء من expenses)
       settlement,       // تسويات نقدية
       partnerDues,      // مستحقات التصفية الثابتة (جزء من cost)
-      netProfit: grossProfit - expenses - settlement,
+      partnerShares,    // نصيب أسماء التصفية برأس المال
+      netProfit: grossProfit - expenses - settlement - partnerShares,
     };
   }
 

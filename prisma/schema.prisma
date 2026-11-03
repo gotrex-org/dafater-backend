@@ -33,7 +33,7 @@ enum PartyRole {
   AGENT // صاحب عمولة
   PERSON // صاحب عهدة (موظف أو أي شخص شايل فلوس أمانة/سلف)
   CLEARANCE // مخلّص جمركي — حساب جاري زي المورد، بيصرف على الجمارك ويتحاسب
-  PARTNER // اسم في التصفية الثابتة — حسابه: رأس ماله ومستحقه له، وسحبه عليه (شوف Partner.party)
+  PARTNER // اسم في التصفية — حسابه: رأس ماله ومستحقه له، وسحبه عليه (شوف Partner.party)
 }
 
 // نوع خروج البضاعة — هو اللي بيحدد السلسلة بتكمل ولا لأ:
@@ -480,7 +480,7 @@ model Transaction {
   // DriverTrip.delayTxId below; see backend/src/common/transaction-cascade.ts.
   groupId String?
 
-  // التصفية الثابتة: الحركة دي ظل لحركة في التصفية (رأس مال، سحب، مستحق صنف) وبتتبني
+  // التصفية: الحركة دي ظل لحركة في التصفية (رأس مال، سحب، مستحق صنف، نصيب فاتورة) وبتتبني
   // منها تلقائي (SettlementService.syncLedger) — وبتتمسح معاها.
   partnerItem      PartnerItem?            @relation(fields: [partnerItemId], references: [id], onDelete: Cascade)
   partnerItemId    Int?                    @unique
@@ -488,6 +488,9 @@ model Transaction {
   partnerCapitalId Int?                    @unique
   partnerPayment   PartnerPayment?         @relation(fields: [partnerPaymentId], references: [id], onDelete: Cascade)
   partnerPaymentId Int?                    @unique
+  // برأس المال: نصيب الاسم من صافي ربح فاتورة مختارة
+  partnerVehicle   PartnerVehicle?         @relation(fields: [partnerVehicleId], references: [id], onDelete: Cascade)
+  partnerVehicleId Int?                    @unique
 
   createdAt DateTime @default(now())
 
@@ -1228,7 +1231,7 @@ model Partner {
   active        Boolean    @default(true)
   note          String?
 
-  // التصفية الثابتة: حساب الاسم في البرنامج (role = PARTNER). رأس ماله ومستحق أصنافه
+  // حساب الاسم في البرنامج (role = PARTNER). رأس ماله ومستحقه (أصناف أو نصيب فواتير)
   // له، وسحبه عليه، فيظهر في ميزان المراجعة والأرباح والخسائر. بيتعمل تلقائي.
   party         Party?     @relation("PartnerParty", fields: [partyId], references: [id], onDelete: SetNull)
   partyId       Int?       @unique
@@ -1353,6 +1356,8 @@ model PartnerVehicle {
   // برأس المال: تعديل يدوي لعدد الكراتين — بدونه العدد = مجموع كميات الأصناف
   cartons   Float?
   note      String?
+  // نصيبه من الفاتورة في حسابه (Transaction.partnerVehicleId)
+  transaction Transaction?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
