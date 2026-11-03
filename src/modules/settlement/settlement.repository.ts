@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { agentRates } from '../../common/agent-rate';
+import { rateAtDate } from '../../common/usd-fifo';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreatePriceListDto, PriceListItemDto, UpdatePriceListDto } from './dto/settlement.dto';
 
@@ -202,7 +204,15 @@ export class SettlementRepository {
    * فواتير البيع المرشّحة. `productIds = null` معناها الاسم مش مربوط بموردين،
    * فكل فواتير البيع مرشّحة. `partnerId` بترجّع المتعلّم عليها للاسم ده بس.
    */
-  saleInvoices(productIds: number[] | null, partnerId?: number, onlySelected = false) {
+  // فاتورة بيع دولار بدون سعر خاص تأخذ سعر الوكيل في تاريخها.
+  async saleInvoices(productIds: number[] | null, partnerId?: number, onlySelected = false) {
+    const rows = await this.rawSaleInvoices(productIds, partnerId, onlySelected);
+    if (!rows.some((r) => r.currency === 'USD' && !r.exchangeRate)) return rows;
+    const rates = await agentRates(this.prisma);
+    return rows.map((r) => (r.currency === 'USD' && !r.exchangeRate ? { ...r, exchangeRate: rateAtDate(rates, r.date) } : r));
+  }
+
+  private rawSaleInvoices(productIds: number[] | null, partnerId?: number, onlySelected = false) {
     return this.prisma.invoice.findMany({
       where: {
         kind: 'SALE',

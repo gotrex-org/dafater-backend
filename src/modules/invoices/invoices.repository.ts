@@ -4,12 +4,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { INVOICE_CHARGES_TX_TYPE } from '../../common/activity';
+import { assertCashCurrency } from '../../common/currency-guard';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto } from './dto/invoices.dto';
 
 // كل endpoint بيرجّع فاتورة بيستخدم الـ include ده — عشان الفاتورة اللي بتوصل
 // للمحرر تبقى كاملة بنفس البيانات اللي اتسجّلت، الخزنة من ضمنها، من أي شاشة
 // اتفتحت منها (القايمة أو صفحة الفاتورة).
-const INVOICE_INCLUDE = { items: { include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, charges: { orderBy: { id: 'asc' }, include: { chargeType: { select: { uid: true, name: true } }, manifest: { select: { uid: true, no: true } } } }, party: true, warehouse: true, treasury: { select: { uid: true, name: true } } } as const;
+const INVOICE_INCLUDE = { items: { orderBy: { id: 'asc' }, include: { product: true, commissionParty: { select: { uid: true, name: true } }, freightTreasury: { select: { uid: true, name: true } }, teaTreasury: { select: { uid: true, name: true } } } }, charges: { orderBy: { id: 'asc' }, include: { chargeType: { select: { uid: true, name: true } }, manifest: { select: { uid: true, no: true } } } }, party: true, warehouse: true, treasury: { select: { uid: true, name: true } } } as const;
 
 type Totals = { itemsTotal: number; chargesTotal: number; paid: number; discount: number };
 
@@ -55,15 +56,16 @@ export class InvoicesRepository {
         tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, currency: true } }),
         tx.warehouse.findUniqueOrThrow({ where: { uid: dto.warehouseId }, select: { id: true } }),
         dto.treasuryId
-          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
+          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true, currency: true } })
           : Promise.resolve(null),
       ]);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
+      if (!dto.fake && paid > 0 && treasury) assertCashCurrency(party.currency, treasury.currency);
       const no = dto.no?.trim() || (await this.nextNo(tx, party.id));
 
-      // سعر الدولار يُكتب على فاتورة البيع فقط. فاتورة الشراء تتسعّر من دفعات الوكيل (FIFO).
-      const rate = party.currency === 'USD' && dto.kind === InvoiceKind.SALE ? (dto.exchangeRate || null) : null;
+      // الفاتورة لا تحمل سعراً خاصاً بها: السعر يأتي من الوكيل (دورة الدولار).
+      const rate: number | null = null;
       const invoice = await tx.invoice.create({
         data: {
           kind: dto.kind,
@@ -107,7 +109,7 @@ export class InvoicesRepository {
     const date = new Date(dto.date);
 
     return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.invoice.findUniqueOrThrow({ where: { uid: id }, select: { id: true, kind: true, no: true, commissionAmount: true, commissionTo: true } });
+      const existing = await tx.invoice.findUniqueOrThrow({ where: { uid: id }, select: { id: true, kind: true, no: true, commissionAmount: true, commissionTo: true, paid: true, treasuryId: true, partyId: true } });
       const { id: invId, kind, no } = existing;
       const isSale = kind === InvoiceKind.SALE;
 
@@ -119,14 +121,18 @@ export class InvoicesRepository {
         tx.party.findUniqueOrThrow({ where: { uid: dto.partyId }, select: { id: true, currency: true } }),
         tx.warehouse.findUniqueOrThrow({ where: { uid: dto.warehouseId }, select: { id: true } }),
         dto.treasuryId
-          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true } })
+          ? tx.treasuryAccount.findUniqueOrThrow({ where: { uid: dto.treasuryId }, select: { id: true, currency: true } })
           : Promise.resolve(null),
       ]);
       const { create: itemsCreate, resolved: resolvedItems } = await this.buildItems(tx, dto.items);
       const { create: chargesCreate, names: chargeNames } = await this.buildCharges(tx, dto.charges);
 
-      // فاتورة الشراء تتسعّر من دفعات الوكيل (FIFO)، فلا تحمل سعراً خاصاً بها.
-      const rate = party.currency === 'USD' && isSale ? (dto.exchangeRate || null) : null;
+      // مدفوع قديم لم يتغيّر يبقى كما هو، حتى يمكن تعديل باقي الفاتورة.
+      const samePaid = existing.paid === paid && existing.treasuryId === (treasury?.id ?? null) && existing.partyId === party.id;
+      if (!dto.fake && paid > 0 && treasury && !samePaid) assertCashCurrency(party.currency, treasury.currency);
+
+      // الفاتورة لا تحمل سعراً خاصاً بها: السعر يأتي من الوكيل (دورة الدولار).
+      const rate: number | null = null;
       await tx.invoice.update({
         where: { id: invId },
         data: {

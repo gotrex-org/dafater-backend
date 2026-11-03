@@ -27,7 +27,7 @@ export class ManifestsRepository {
     return paginate(this.prisma.manifest, q, {
       where,
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
+      include: { items: { orderBy: { id: 'asc' } }, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 
@@ -37,7 +37,7 @@ export class ManifestsRepository {
     return this.prisma.manifest.findUnique({
       where: { uid: id },
       include: {
-        items: true,
+        items: { orderBy: { id: 'asc' } },
         driverTrips: {
           select: { uid: true, arrivalDate: true, driverName: true, vehicleNo: true, trailerNo: true, vehicleLabel: true, departureDate: true, agreedFreight: true },
           orderBy: { id: 'asc' },
@@ -60,7 +60,7 @@ export class ManifestsRepository {
           { deal: { client: { uid: partyUid } } },
         ],
       },
-      include: { items: true, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
+      include: { items: { orderBy: { id: 'asc' } }, driverTrips: { select: { arrivalDate: true } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
@@ -76,7 +76,7 @@ export class ManifestsRepository {
         deal: dealId ? { connect: { uid: dealId } } : undefined,
         items: { create: items },
       },
-      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
+      include: { items: { orderBy: { id: 'asc' } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 
@@ -111,7 +111,7 @@ export class ManifestsRepository {
         ...(dealId && invoiceId === undefined ? { invoice: { disconnect: true } } : {}),
         ...(items !== undefined ? { items: { deleteMany: {}, createMany: { data: items } } } : {}),
       },
-      include: { items: true, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
+      include: { items: { orderBy: { id: 'asc' } }, invoice: { select: { uid: true, no: true, date: true, kind: true } }, deal: DEAL_LINK },
     });
   }
 
