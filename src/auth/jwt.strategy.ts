@@ -31,7 +31,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload) {
     const user = await this.prisma.user.findUnique({
       where: { uid: payload.sub },
-      include: { party: { select: { uid: true, id: true, name: true } } },
+      include: { party: { select: { uid: true, id: true, name: true } }, partner: { select: { id: true } } },
     });
     if (!user) throw new UnauthorizedException();
     if (payload.ver !== user.tokenVersion) throw new UnauthorizedException('انتهت صلاحية الجلسة');
@@ -48,6 +48,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       partyId: user.party?.uid,
       partyIntId: user.party?.id,
       partyName: user.party?.name,
+      // مربوط باسم في التصفية — قسم التصفية بيظهر له (شوف SettlementViewerGuard)
+      settlementLinked: !!user.partner,
     };
   }
 }

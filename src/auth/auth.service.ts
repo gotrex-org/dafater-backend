@@ -28,7 +28,7 @@ export class AuthService {
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { username: dto.username },
-      include: { party: { select: { uid: true, name: true } } },
+      include: { party: { select: { uid: true, name: true } }, partner: { select: { id: true } } },
     });
     const ok = user && await bcrypt.compare(dto.password, user.pinHash);
     if (!user || !ok) throw new UnauthorizedException('اسم المستخدم أو كلمة المرور غير صحيحة');
@@ -54,6 +54,7 @@ export class AuthService {
         ledgerPartyIds: user.ledgerPartyIds ?? [],
         treasuryIds: user.treasuryIds ?? [],
         role: user.role,
+        settlementLinked: !!user.partner,
         ...(user.party ? { partyId: user.party.uid, partyName: user.party.name } : {}),
       },
     };
