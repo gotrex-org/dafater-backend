@@ -927,19 +927,19 @@ export class SettlementService {
     };
   }
 
-  /** إضافة أو نقص رأس مال على القديم — للمدير فقط. */
   /**
-   * إضافة أو نقص رأس مال على القديم — للمدير فقط. في التصفية الثابتة الفلوس بتدخل
-   * الخزنة أو تخرج منها فعلاً، فالخزنة إجبارية (شوف syncLedger).
+   * إضافة أو نقص رأس مال على القديم — للمدير فقط. في التصفية الثابتة الحركة يا إما
+   * من خزنة (الفلوس بتدخل أو تخرج فعلاً)، يا إما «تسوية» على حسابه من غير خزنة
+   * (`settle`) — والاتنين في حسابه وكشفه (شوف syncLedger).
    */
   async addCapitalMovement(
     partnerUid: string,
-    dto: { date: string; amount: number; note?: string; treasuryId?: string },
+    dto: { date: string; amount: number; note?: string; treasuryId?: string; settle?: boolean },
     me: Requester,
   ) {
     const partner = await this.access(partnerUid, me);
     if (!dto.amount) throw new BadRequestException('اكتب مبلغ الإضافة أو النقص');
-    const treasuryId = await this.fixedTreasury(partner, dto.treasuryId);
+    const treasuryId = dto.settle ? null : await this.fixedTreasury(partner, dto.treasuryId);
     await this.ledger.createCapitalMovement({
       partnerId: partner.id,
       date: utcDay(dto.date),
@@ -952,10 +952,10 @@ export class SettlementService {
     return this.capital(partnerUid, me);
   }
 
-  /** التصفية الثابتة: خزنة الحركة إجبارية وبالجنيه. برأس المال الحركة بدون خزنة. */
+  /** التصفية الثابتة: خزنة الحركة بالجنيه (أو تسوية في رأس المال). برأس المال بدون خزنة. */
   private async fixedTreasury(partner: PartnerRow, treasuryUid?: string) {
     if (partner.shareBasis !== 'FIXED') return null;
-    if (!treasuryUid) throw new BadRequestException('اختر الخزنة');
+    if (!treasuryUid) throw new BadRequestException('اختر الخزنة أو التسوية');
     return this.ledger.egpTreasuryId(treasuryUid);
   }
 
@@ -1083,7 +1083,7 @@ export class SettlementService {
         rows.push({
           date: m.date,
           label: m.amount < 0 ? 'سحب' : 'مدفوعات',
-          source: m.note || (m.amount < 0 ? 'نقص من رأس المال' : 'إضافة لرأس المال'),
+          source: `${m.note || (m.amount < 0 ? 'نقص من رأس المال' : 'إضافة لرأس المال')}${m.treasuryId == null ? ' — تسوية' : ''}`,
           amount: m.amount,
           kind: m.amount < 0 ? 'PAYMENT' : 'CAPITAL',
           id: m.uid,
@@ -1216,7 +1216,7 @@ export class SettlementService {
         date: m.date,
         treasuryId: m.treasuryId,
         ...(m.amount > 0 ? { credit: a, cashIn: cash ? a : 0 } : { debit: a, cashOut: cash ? a : 0 }),
-        note: m.note || `${m.amount > 0 ? 'إضافة لرأس مال' : 'نقص من رأس مال'} ${partner.name}`,
+        note: `${m.note || `${m.amount > 0 ? 'إضافة لرأس مال' : 'نقص من رأس مال'} ${partner.name}`}${cash ? '' : ' — تسوية'}`,
         createdById: m.createdById,
       });
     }

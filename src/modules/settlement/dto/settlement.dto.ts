@@ -36,8 +36,9 @@ export class CapitalMovementDto {
   date: string;
   @IsNumber() amount: number;
   @IsOptional() @IsString() note?: string;
-  /** التصفية الثابتة: الخزنة (إجبارية هناك) */
+  /** التصفية الثابتة: الخزنة، أو `settle` = تسوية على حسابه من غير خزنة */
   @IsOptional() @IsString() treasuryId?: string;
+  @IsOptional() @IsBoolean() settle?: boolean;
 }
 
 export class ItemRefDto {
