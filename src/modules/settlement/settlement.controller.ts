@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { AdminOnly } from '../../common/decorators/admin.decorator';
 import { Permissions } from '../../common/decorators/permissions.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Requester, SettlementService } from './settlement.service';
+import { SettlementViewerGuard } from './settlement-viewer.guard';
 import {
   CreatePartnerDto, CreatePriceListDto, PartnerUpsertDto, SelectInvoicesDto,
   SetItemWeekDto, UpdatePartnerVehicleDto, UpdatePriceListDto,
@@ -26,6 +27,8 @@ import {
  */
 @Controller('settlement')
 @Permissions('settlement')
+// حساب مربوط باسم (حتى لو أدمن) يرى تصفيته فقط — شوف SettlementViewerGuard
+@UseGuards(SettlementViewerGuard)
 export class SettlementController {
   constructor(private service: SettlementService) {}
 
