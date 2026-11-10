@@ -138,6 +138,7 @@ model User {
   capitalMovementsAdded PartnerCapitalMovement[] @relation("CapitalMovementCreatedBy")
   partnerPaymentsAdded  PartnerPayment[]         @relation("PartnerPaymentCreatedBy")
   partnerPostingsAdded  PartnerPosting[]         @relation("PartnerPostingCreatedBy")
+  invoiceEditRequests   InvoiceEditRequest[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -547,6 +548,8 @@ model Invoice {
   // العربيات الداخلة في تصفية شريك أو أكتر — شوف PartnerVehicle
   partnerVehicles PartnerVehicle[]
   partnerItems    PartnerItem[]
+  // تعديل مستخدم غير المالك — بيستنى موافقة المالك قبل ما يتطبّق
+  editRequest     InvoiceEditRequest?
   itemWeeks       InvoiceItemWeek[]
   transactions Transaction[]
   manifests    Manifest[]
@@ -1415,6 +1418,22 @@ model PartnerItem {
 // ترحيل لكشف حساب التصفية الثابتة: أصناف مسعّرة اتسجلت مرة واحدة كأنها قيمة فاتورة.
 // سطر واحد في الكشف بإجماليها، وبالضغط عليه تظهر أصنافه. للمدير فقط. حذف الترحيل بيرجّع
 // أصنافه غير مرحّلة.
+// تعديل فاتورة من مستخدم غير المالك: البيانات الجديدة كاملة (UpdateInvoiceDto) محفوظة
+// هنا والفاتورة نفسها زي ما هي، لحد ما المالك يوافق (تتطبّق) أو يرفض (تتمسح).
+// تعديل واحد معلّق لكل فاتورة — التعديل الأحدث بيحل محل اللي قبله.
+model InvoiceEditRequest {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique @default(cuid())
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId Int      @unique
+  payload   Json
+
+  requestedBy   User? @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  requestedById Int?
+
+  createdAt DateTime @default(now())
+}
+
 model PartnerPosting {
   id        Int      @id @default(autoincrement())
   uid       String   @unique @default(cuid())

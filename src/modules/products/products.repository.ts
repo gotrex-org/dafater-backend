@@ -131,6 +131,35 @@ export class ProductsRepository {
         else await tx.invoiceItemWeek.update({ where: { id: week.id }, data: { productId: targetId } });
       }
 
+      // أصناف التصفية — من غير النقل دي كانت بتتمسح مع الصنف المدموج (Cascade) حتى المرحّلة.
+      // لو نفس الاسم عنده الصنفين على نفس المستند: المرحّل يغلب، ولو الاتنين مرحّلين
+      // الكمية والمستحق بيتجمعوا في سطر الأساسي، ولو مفيش مرحّل سعر الأساسي يغلب.
+      for (const item of await tx.partnerItem.findMany({ where: { productId: { in: sourceIds } } })) {
+        const existing = await tx.partnerItem.findFirst({
+          where: { partnerId: item.partnerId, invoiceId: item.invoiceId, dealId: item.dealId, productId: targetId },
+        });
+        if (!existing) {
+          await tx.partnerItem.update({ where: { id: item.id }, data: { productId: targetId } });
+        } else if (item.postingId && existing.postingId) {
+          await tx.partnerItem.update({
+            where: { id: existing.id },
+            data: {
+              postedQty: (existing.postedQty ?? 0) + (item.postedQty ?? 0),
+              postedAmount: (existing.postedAmount ?? 0) + (item.postedAmount ?? 0),
+            },
+          });
+          await tx.partnerItem.delete({ where: { id: item.id } });
+        } else if (item.postingId) {
+          await tx.partnerItem.delete({ where: { id: existing.id } });
+          await tx.partnerItem.update({ where: { id: item.id }, data: { productId: targetId } });
+        } else {
+          if (!existing.postingId && existing.rate == null && existing.percent == null && (item.rate != null || item.percent != null)) {
+            await tx.partnerItem.update({ where: { id: existing.id }, data: { rate: item.rate, percent: item.percent } });
+          }
+          await tx.partnerItem.delete({ where: { id: item.id } });
+        }
+      }
+
       const where = { productId: { in: sourceIds } };
       const data = { productId: targetId };
       const items = await tx.invoiceItem.updateMany({ where, data });
@@ -138,6 +167,8 @@ export class ProductsRepository {
       const deals = await tx.dealItem.updateMany({ where, data });
       const adjustments = await tx.adjustment.updateMany({ where, data });
       const loans = await tx.loan.updateMany({ where, data });
+      // ناولون الصنف في الخزنة — كان بيفقد صنفه (SetNull) مع الحذف
+      await tx.transaction.updateMany({ where: { freightProductId: { in: sourceIds } }, data: { freightProductId: targetId } });
 
       const firstPositive = (pick: (p: typeof target) => number) =>
         pick(target) > 0 ? pick(target) : sources.map(pick).find((v) => v > 0) ?? pick(target);

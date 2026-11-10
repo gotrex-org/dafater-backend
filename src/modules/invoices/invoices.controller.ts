@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 import { InvoiceKind } from '@prisma/client';
 import { Permissions } from '../../common/decorators/permissions.decorator';
@@ -6,11 +6,13 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { CreateInvoiceDto, UpdateInvoiceDto, CommissionDto, ManifestTabClosedDto, InvoiceArchivedDto } from './dto/invoices.dto';
 import { InvoicesService } from './invoices.service';
+import { InvoiceEditsService } from './invoice-edits.service';
+import { PrimaryGuard } from '../../auth/guards/primary.guard';
 
 @Controller('invoices')
 @Permissions('invoices')
 export class InvoicesController {
-  constructor(private service: InvoicesService) {}
+  constructor(private service: InvoicesService, private edits: InvoiceEditsService) {}
 
   @Get()
   findAll(
@@ -49,6 +51,32 @@ export class InvoicesController {
   }
 
   // بيانات شكل الشيت: حساب قديم + سدادات الفترة + الباقي عليه
+  // تعديلات غير المالك المعلّقة — المالك بس يشوفها ويوافق أو يرفض.
+  // لازم قبل ':id' عشان Nest بيطابق أول راوت مناسب.
+  @Get('edit-requests')
+  @UseGuards(PrimaryGuard)
+  editRequests() {
+    return this.edits.list();
+  }
+
+  @Get('edit-requests/:uid')
+  @UseGuards(PrimaryGuard)
+  editRequest(@Param('uid') uid: string) {
+    return this.edits.detail(uid);
+  }
+
+  @Post('edit-requests/:uid/approve')
+  @UseGuards(PrimaryGuard)
+  approveEdit(@Param('uid') uid: string) {
+    return this.edits.approve(uid);
+  }
+
+  @Post('edit-requests/:uid/reject')
+  @UseGuards(PrimaryGuard)
+  rejectEdit(@Param('uid') uid: string) {
+    return this.edits.reject(uid);
+  }
+
   @Get(':id/sheet')
   sheet(@Param('id') id: string) {
     return this.service.sheet(id);
@@ -93,6 +121,11 @@ export class InvoicesController {
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto, @CurrentUser() user: any) {
+    // المالك بس بيعدّل مباشرة — أي حد تاني تعديله بيستنى موافقة المالك
+    if (!user?.isPrimary) {
+      this.service.validate(dto);
+      return this.edits.request(id, dto, user?.intId);
+    }
     return this.service.update(id, dto, user?.intId);
   }
 

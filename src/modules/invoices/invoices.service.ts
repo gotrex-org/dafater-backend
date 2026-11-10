@@ -215,6 +215,12 @@ export class InvoicesService {
     return this.repo.create(dto, { itemsTotal, chargesTotal, paid, discount, isSale, createdById });
   }
 
+  // نفس فحوصات التعديل من غير ما يتسجّل — لتعديل غير المالك قبل ما يستنى الموافقة
+  validate(dto: UpdateInvoiceDto) {
+    this.assertTreasuryForExtras(dto);
+    this.totals(dto);
+  }
+
   update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
     this.assertTreasuryForExtras(dto);
     const { itemsTotal, chargesTotal, total } = this.totals(dto);
