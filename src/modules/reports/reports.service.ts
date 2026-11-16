@@ -167,12 +167,54 @@ export class ReportsService {
       }
     }
 
+    // تكاليف البيع اللي مش داخلة تكلفة الصنف. ناولون وشاي وعمولة بنود الشراء داخلين تكلفة
+    // الوحدة، فهنا بتوع فواتير البيع بس. ناولون البيع المربوط بعربية بيتخصم من ربح الشحن.
+    const saleCashAgg = await this.prisma.transaction.aggregate({
+      where: {
+        ...(date ? { date } : {}),
+        OR: [
+          { type: FREIGHT_TX_TYPE, invoice: { kind: InvoiceKind.SALE, manifests: { none: {} } } },
+          { type: 'شاي', invoice: { kind: InvoiceKind.SALE } },
+        ],
+      },
+      _sum: { cashOut: true, cashIn: true },
+    });
+    const saleFreight = (saleCashAgg._sum.cashOut || 0) - (saleCashAgg._sum.cashIn || 0);
+    // العمولات: كل عمولات فواتير البيع، وعمولة الفاتورة كلها على الشراء (عمولة البند داخل
+    // تكلفة الوحدة)، وعمولة العملية كلها في البيع الخارجي (عمولة البند داخل تكلفتها فوق).
+    const saleCommAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'commission', invoice: { kind: InvoiceKind.SALE }, ...(date ? { date } : {}) },
+      _sum: { credit: true, debit: true },
+    });
+    const purchaseCommAgg = await this.prisma.invoice.aggregate({
+      where: { kind: InvoiceKind.PURCHASE, fake: false, ...(date ? { date } : {}) },
+      _sum: { commissionAmount: true },
+    });
+    const dealCommAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'commission', dealId: { not: null }, ...(date ? { date } : {}) },
+      _sum: { credit: true, debit: true },
+    });
+    const dealItemComm = deals.reduce((s, d) => s + d.items.reduce((t, it) => t + (it.product?.service ? 0 : it.commission || 0), 0), 0);
+    const commissions = (saleCommAgg._sum.credit || 0) - (saleCommAgg._sum.debit || 0)
+      + (purchaseCommAgg._sum.commissionAmount || 0)
+      + Math.max(0, (dealCommAgg._sum.credit || 0) - (dealCommAgg._sum.debit || 0) - dealItemComm);
+    // الخصم المنفصل: من المورد (عليه) إيراد، ولأي طرف تاني (له) مصروف.
+    const discAgg = await this.prisma.transaction.aggregate({
+      where: { type: 'خصم', ...(date ? { date } : {}) },
+      _sum: { credit: true, debit: true },
+    });
+    const discountsEarned = discAgg._sum.debit || 0;
+    const discountsGiven = discAgg._sum.credit || 0;
+
     const expenses = await this.expenseRows(from, to);
     let tradeExpenses = 0;
+    // البنود المعلّمة «تضاف على البضاعة» جزء من التكلفة، مش مصروف بعد مجمل الربح.
+    let goodsExpenses = 0;
     const expByCat = new Map<string, number>();
     for (const e of expenses) {
       const amt = this.portion(this.expenseAmount(e), e.activity, e.shippingPct, 'TRADE');
       if (!amt) continue;
+      if (e.category?.addsToGoods) { goodsExpenses += amt; continue; }
       tradeExpenses += amt;
       const k = e.category?.name ?? 'بدون بند';
       expByCat.set(k, (expByCat.get(k) ?? 0) + amt);
@@ -185,13 +227,14 @@ export class ReportsService {
 
     const netSales = sales - salesDiscount - salesReturns;
     const cost = cogs - returnsCost;
-    const grossProfit = netSales - cost;
+    const grossProfit = netSales - cost - goodsExpenses;
     return {
       sales, salesDiscount, salesReturns, netSales, salesCount,
-      cost, grossProfit,
+      cost, goodsExpenses, grossProfit,
+      saleFreight, commissions, discountsEarned, discountsGiven,
       expenses: tradeExpenses,
       expensesByCategory: [...expByCat.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total),
-      netProfit: grossProfit - tradeExpenses,
+      netProfit: grossProfit - saleFreight - commissions + discountsEarned - discountsGiven - tradeExpenses,
       purchases,
       dealsWithoutRate,
       products: [...byProduct.entries()]
@@ -244,7 +287,8 @@ export class ReportsService {
     const truckDelay = await sumType(['truckDelay'], 'debit');
     const truckWeightDiff = await sumType(['truckWeightDiff'], 'debit');
     const customs = await sumType(['جمارك'], 'credit');
-    const driverExtras = await sumType(['driverDelay', 'driverWeightDiff', 'driverTea'], 'cashOut');
+    // السلفة بتنزّل متبقي العطلة زي دفعة العطلة، فهي جزء منها.
+    const driverExtras = await sumType(['driverDelay', 'driverAdvance', 'driverWeightDiff', 'driverTea'], 'cashOut');
     // ناولون فواتير البيع المربوطة بعربية — تكلفة شحن على العربية (نفس ربح كل عربية).
     const freightAgg = await this.prisma.transaction.aggregate({
       where: { type: FREIGHT_TX_TYPE, invoice: { kind: InvoiceKind.SALE, fake: false, manifests: { some: {} } }, ...dateWhere },
@@ -508,77 +552,46 @@ export class ReportsService {
     };
   }
 
-  // ربح وخسارة — revenue vs. cost vs. expenses for the period. Expenses split into
-  // operating (salaries/rent — standalone) and goods-related (freight/شاي — added to cost).
+  // الأرباح والخسائر = ربح التجارة + ربح الشحن − التسويات النقدية − نصيب أسماء التصفية.
+  // مبنية من التقريرين نفسهم، فالرقم دايماً بيطابقهم: كل مصروف بيتقسم على النشاطين
+  // بنسبته، وأي تعديل في حساب تقرير بيوصل هنا لوحده.
   async profitLoss(from?: string, to?: string) {
-    // مستحقات التصفية الثابتة حركات مبنية من التصفية — تتحدّث الأول عشان تعديلات الفواتير توصل
-    await this.settlement.syncAllFixed();
-    const s = await this.summary(from, to);
+    const trade = await this.tradeReport(from, to);
+    const ship = await this.shippingSummary(from, to);
     const date = this.range(from, to);
-    // كل حركة صرف/توريد بتأثر بالصافي: صرف (cashOut) − توريد (cashIn).
-    const net = (agg: { _sum: { cashOut: number | null; cashIn: number | null } }) =>
-      (agg._sum.cashOut || 0) - (agg._sum.cashIn || 0);
-
-    const opAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف', freightInvoiceId: null, ...(date ? { date } : {}), OR: [{ categoryId: null }, { category: { addsToGoods: false } }] },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    const goodsAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف', ...(date ? { date } : {}), OR: [{ category: { addsToGoods: true } }, { freightInvoiceId: { not: null } }] },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    // مصاريف المخزن (إيجار/مرتبات/تحميل/تخليص) — تشغيلية
-    const whAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف مخزن', freightInvoiceId: null, ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    const whFreightAgg = await this.prisma.transaction.aggregate({
-      where: { type: 'مصروف مخزن', freightInvoiceId: { not: null }, ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    // مصاريف بضاعة نقدية (شامل الناولون والشاي) — تتضاف على التكلفة. نستثني حركات البيع
-    // الخارجي (dealId) لأن الربح والخسارة ده مبني على الفواتير مش الصفقات.
-    const goodsCashAgg = await this.prisma.transaction.aggregate({
-      where: { type: { in: ['مصروف بضاعة', 'ناولون', 'شاي'] }, dealId: null, ...(date ? { date } : {}) },
-      _sum: { cashOut: true, cashIn: true },
-    });
     // تسوية نقدية — تتخصم من الصافي في الآخر
     const settleAgg = await this.prisma.transaction.aggregate({
       where: { type: 'تسوية نقدية', ...(date ? { date } : {}) },
       _sum: { cashOut: true, cashIn: true },
     });
-
-    const warehouseExpenses = net(whAgg);
-    const expenses = net(opAgg) + warehouseExpenses;   // مصاريف تشغيلية (شخصية + مخزن)
-    const goodsExpenses = net(goodsAgg) + net(goodsCashAgg) + net(whFreightAgg); // مصاريف على البضاعة
-    const settlement = net(settleAgg);                 // تسويات نقدية
-    // مستحقات أسماء التصفية الثابتة على أصنافهم (له في حسابه، من غير خزنة) — تتخصم من الصافي
-    const duesAgg = await this.prisma.transaction.aggregate({
-      where: { type: LEDGER_TYPES.due, ...(date ? { date } : {}) },
-      _sum: { credit: true, debit: true },
-    });
-    const partnerDues = (duesAgg._sum.credit || 0) - (duesAgg._sum.debit || 0);
+    const settlement = (settleAgg._sum.cashOut || 0) - (settleAgg._sum.cashIn || 0);
     // نصيب أسماء التصفية برأس المال من صافي ربح فواتيرهم — بيتخصم من الصافي (والخسارة بترجع)
     const sharesAgg = await this.prisma.transaction.aggregate({
       where: { type: LEDGER_TYPES.share, ...(date ? { date } : {}) },
       _sum: { credit: true, debit: true },
     });
     const partnerShares = (sharesAgg._sum.credit || 0) - (sharesAgg._sum.debit || 0);
-    const revenue = s.netSales;
-    // مستحقات التصفية على تكلفة البضاعة (الكرتونة بـ 5 وله 1 → 6)، مش مصروف بعد الربح
-    const cost = (s.purchases - s.purchaseReturns) + goodsExpenses + partnerDues;
-    const grossProfit = revenue - cost;
     return {
-      revenue,
-      cost,             // net purchases + مصاريف البضاعة + مستحقات التصفية
-      goodsExpenses,
-      grossProfit,
-      expenses,         // مصاريف تشغيلية (شخصية + مخزن)
-      warehouseExpenses, // مصاريف المخزن لوحدها (جزء من expenses)
-      settlement,       // تسويات نقدية
-      partnerDues,      // مستحقات التصفية الثابتة (جزء من cost)
-      partnerShares,    // نصيب أسماء التصفية برأس المال
-      netProfit: grossProfit - expenses - settlement - partnerShares,
+      trade: {
+        netSales: trade.netSales,
+        cost: trade.cost + trade.goodsExpenses,
+        grossProfit: trade.grossProfit,
+        sellingCosts: trade.saleFreight + trade.commissions,
+        discounts: trade.discountsEarned - trade.discountsGiven,
+        expenses: trade.expenses,
+        profit: trade.netProfit,
+      },
+      shipping: {
+        income: ship.incomeTotal,
+        vehicleCosts: ship.vehicleCostsTotal,
+        expenses: ship.warehouseTotal,
+        profit: ship.profit,
+      },
+      settlement,
+      partnerShares,
+      netProfit: trade.netProfit + ship.profit - settlement - partnerShares,
+      salesAwaitingPurchase: ((trade as any).salesAwaitingPurchase as number | undefined) ?? 0,
+      dealsWithoutRate: trade.dealsWithoutRate,
     };
   }
 
@@ -604,14 +617,23 @@ export class ReportsService {
         ...(date ? { date } : {}),
         OR: [{ type: { in: Object.keys(TYPE_MAP) } }, { categoryId: { not: null } }],
       },
-      select: { type: true, cashOut: true, cashIn: true, credit: true, debit: true, category: { select: { name: true, group: true } } },
+      select: {
+        type: true, cashOut: true, cashIn: true, credit: true, debit: true, freightInvoiceId: true,
+        invoice: { select: { kind: true } },
+        category: { select: { name: true, group: true } },
+      },
     });
 
-    const groups: Record<'WAREHOUSE' | 'EXTERNAL', Map<string, number>> = { WAREHOUSE: new Map(), EXTERNAL: new Map() };
+    type Group = 'WAREHOUSE' | 'EXTERNAL' | 'GOODS';
+    const groups: Record<Group, Map<string, number>> = { WAREHOUSE: new Map(), EXTERNAL: new Map(), GOODS: new Map() };
     for (const r of rows) {
       const fallback = TYPE_MAP[r.type];
+      // المحمّل على تكلفة الصنف (ناولون وشاي فاتورة الشراء، مصروف البضاعة الموزّع، والناولون
+      // الداخلي المربوط بصنف) داخل تكلفة البضاعة — بيظهر لوحده وبره إجمالي المصاريف.
+      const loaded = r.freightInvoiceId != null || r.type === 'مصروف بضاعة'
+        || ((r.type === 'ناولون' || r.type === 'شاي') && r.invoice?.kind === InvoiceKind.PURCHASE);
       // البند المختار له الأولوية؛ لو مفيش، نرجع لنوع الحركة.
-      const g = (r.category?.group as 'WAREHOUSE' | 'EXTERNAL' | undefined) ?? fallback?.group;
+      const g: Group | undefined = loaded ? 'GOODS' : (r.category?.group as 'WAREHOUSE' | 'EXTERNAL' | undefined) ?? fallback?.group;
       const name = r.category?.name ?? fallback?.name;
       if (!g || !name) continue;
       // الناولون على حساب مورد مصروف بدون حركة خزنة، فقيمته في حساب المورد.
@@ -621,7 +643,7 @@ export class ReportsService {
       groups[g].set(name, (groups[g].get(name) ?? 0) + amt);
     }
 
-    const build = (key: 'WAREHOUSE' | 'EXTERNAL', label: string) => {
+    const build = (key: Group, label: string) => {
       const items = [...groups[key].entries()]
         .map(([name, total]) => ({ name, total }))
         .filter((x) => Math.abs(x.total) > 0.001)
@@ -629,7 +651,8 @@ export class ReportsService {
       return { key, label, total: items.reduce((s, x) => s + x.total, 0), items };
     };
     const list = [build('WAREHOUSE', 'مصاريف مخزن'), build('EXTERNAL', 'مصاريف خارجية')];
-    return { total: list.reduce((s, g) => s + g.total, 0), groups: list };
+    const goods = build('GOODS', 'محمّل على تكلفة البضاعة');
+    return { total: list.reduce((s, g) => s + g.total, 0), groups: goods.items.length ? [...list, goods] : list };
   }
 
   // أكتر فترة اشتغل فيها عميل/مورد/صنف معيّن — للـ Peak (اختيار جهة وشوف نشاطها الشهري).
