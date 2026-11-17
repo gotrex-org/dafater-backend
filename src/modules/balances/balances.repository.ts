@@ -69,18 +69,6 @@ export class BalancesRepository {
     return out;
   }
 
-  /**
-   * مستحقات التصفية الثابتة على صنف من فواتير الشراء (حركات «مستحق تصفية» في حساب
-   * الاسم). بتتحمّل على تكلفة الصنف زي الناولون والشاي — شوف SettlementService.syncLedger.
-   */
-  private async settlementDues(productId: number) {
-    const agg = await this.prisma.transaction.aggregate({
-      where: { type: 'مستحق تصفية', partnerItem: { is: { productId, invoice: { is: { kind: 'PURCHASE', fake: false } } } } },
-      _sum: { credit: true, debit: true },
-    });
-    return (agg._sum.credit || 0) - (agg._sum.debit || 0);
-  }
-
   async allPartyBalances(): Promise<Record<number, number>> {
     const parties = await this.prisma.party.findMany();
     const grouped = await this.prisma.transaction.groupBy({
@@ -158,38 +146,139 @@ export class BalancesRepository {
     return qty;
   }
 
-  async avgCost(productId: number, fifo?: FifoResult): Promise<number> {
+  /**
+   * فواتير شراء الصنف بتكلفة الوحدة، من الأحدث للأقدم. التكلفة تشمل الناولون والشاي والعمولة
+   * ومستحق التصفية والناولون الداخلي المحمّلين على نفس الفاتورة. البند المجاني بسعر صفر ما
+   * يدخلش في الكمية، والفاتورة كلها بسعر صفر وفاتورة الدولار غير المسعّرة من الوكيل ما يتحسبوش.
+   */
+  private async purchaseCosts(productId: number, fifo?: FifoResult): Promise<{ id: number; date: Date; unit: number }[]> {
     const items = await this.prisma.invoiceItem.findMany({
-      where: { productId, invoice: { kind: 'PURCHASE', fake: false } },
-      select: { qty: true, price: true, freight: true, tea: true, commission: true, invoice: { select: { id: true, currency: true } } },
+      where: { productId, qty: { gt: 0 }, invoice: { kind: 'PURCHASE', fake: false } },
+      orderBy: [{ invoice: { date: 'desc' } }, { invoiceId: 'desc' }],
+      select: { qty: true, price: true, freight: true, tea: true, commission: true, invoice: { select: { id: true, date: true, currency: true } } },
     });
-    let totalQty = 0;
-    // التصفية الثابتة: مستحق الاسم على الصنف جزء من تكلفته (الكرتونة بـ 5 وله 1 → 6)
-    let totalAmt = await this.settlementDues(productId);
+    if (!items.length) return [];
+    const byInvoice = new Map<number, { date: Date; currency: string; qty: number; goods: number; extras: number }>();
     for (const it of items) {
-      // Landed cost: goods + freight (ناولون) + tea (شاي) + commission (عمولة) added to the item.
-      const extras = (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
-      if (it.invoice.currency === 'USD') {
-        // سعر الصنف بالدولار → جنيه بسعر الدفعات اللي قابلت الفاتورة (FIFO). الجزء غير
-        // المسعّر من الفاتورة لا يدخل التكلفة لحد ما الوكيل يورّد.
-        fifo ??= await this.usdFifo();
-        const f = fifo.byInvoice.get(it.invoice.id);
-        if (!f || f.usd <= 0 || f.pricedUsd <= 0) continue;
-        const frac = Math.min(1, f.pricedUsd / f.usd);
-        totalQty += it.qty * frac;
-        totalAmt += it.qty * it.price * frac * f.rate + extras * frac;
-        continue;
-      }
-      totalQty += it.qty;
-      totalAmt += it.qty * it.price + extras;
+      const g = byInvoice.get(it.invoice.id) ?? { date: it.invoice.date, currency: it.invoice.currency, qty: 0, goods: 0, extras: 0 };
+      if (it.price > 0) g.qty += it.qty;
+      g.goods += it.qty * it.price;
+      g.extras += (it.freight || 0) + (it.tea || 0) + (it.commission || 0);
+      byInvoice.set(it.invoice.id, g);
     }
-    // ناولون داخلي من صرف النقدية محمّل على الصنف من فاتورة شراء.
-    const linked = await this.prisma.transaction.aggregate({
-      where: { freightProductId: productId, freightInvoice: { kind: 'PURCHASE', fake: false } },
-      _sum: { cashOut: true, cashIn: true },
-    });
-    totalAmt += (linked._sum.cashOut || 0) - (linked._sum.cashIn || 0);
-    return totalQty > 0 ? totalAmt / totalQty : 0;
+    const [dues, linked] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: { type: 'مستحق تصفية', partnerItem: { is: { productId, invoiceId: { in: [...byInvoice.keys()] } } } },
+        select: { credit: true, debit: true, partnerItem: { select: { invoiceId: true } } },
+      }),
+      this.prisma.transaction.findMany({
+        where: { freightProductId: productId, freightInvoiceId: { in: [...byInvoice.keys()] } },
+        select: { cashOut: true, cashIn: true, freightInvoiceId: true },
+      }),
+    ]);
+    const added = new Map<number, number>();
+    const add = (id: number | null | undefined, v: number) => { if (id != null) added.set(id, (added.get(id) ?? 0) + v); };
+    for (const t of dues) add(t.partnerItem?.invoiceId, (t.credit || 0) - (t.debit || 0));
+    for (const t of linked) add(t.freightInvoiceId, (t.cashOut || 0) - (t.cashIn || 0));
+
+    const out: { id: number; date: Date; unit: number }[] = [];
+    for (const [id, g] of byInvoice) {
+      if (g.qty <= 0) continue;
+      let rate = 1;
+      if (g.currency === 'USD') {
+        fifo ??= await this.usdFifo();
+        const f = fifo.byInvoice.get(id);
+        if (!f || f.usd <= 0 || f.pricedUsd <= 0) continue;
+        rate = f.rate;
+      }
+      out.push({ id, date: g.date, unit: (g.goods * rate + g.extras + (added.get(id) ?? 0)) / g.qty });
+    }
+    return out;
+  }
+
+  /**
+   * تكلفة وحدة الصنف الحالية = متوسط سعر الشراء المرجّح بالكمية للرصيد الموجود.
+   * صنف مالوش أي فاتورة شراء مسعّرة: سعر التقييم اليدوي لو متكتب، وإلا صفر.
+   */
+  async unitCost(productId: number, fifo?: FifoResult): Promise<number> {
+    const { avg } = await this.saleCosting(productId, fifo);
+    if (avg != null) return avg;
+    const p = await this.prisma.product.findUnique({ where: { id: productId }, select: { price: true } });
+    return p?.price && p.price > 0 ? p.price : 0;
+  }
+
+  /**
+   * تكلفة بيعات الصنف بالمتوسط المرجّح المتحرّك: كل فاتورة شراء بتدخل على الرصيد الموجود
+   * (الرصيد × المتوسط + الكمية × تكلفة الفاتورة) ÷ الرصيد الجديد، والبيعة بتاخد المتوسط
+   * وقت البيع — شراء بعدها ما يغيّرهاش. 50 بـ 35 + 105 بـ 40 + 30 بـ 45 → 39.46.
+   * الكمية اللي اتباعت من غير رصيد تكلفتها أول شراء بعدها، ولو لسه ما اتشرتش تبقى
+   * pendingQty وبره التقارير لحد الشراء. نفس اليوم: الوارد يتحسب قبل المنصرف.
+   * المرتجع والتسوية والإعارة بيغيّروا الكمية بس، والمتوسط زي ما هو.
+   */
+  async saleCosting(productId: number, fifo?: FifoResult) {
+    const costs = await this.purchaseCosts(productId, fifo);
+    const unitOf = new Map(costs.map((c) => [c.id, c.unit]));
+    // costs من الأحدث للأقدم → أول شراء مسعّر بعد تاريخ معيّن.
+    const firstAfter = (d: Date) => {
+      let found: number | null = null;
+      for (const c of costs) { if (c.date > d) found = c.unit; else break; }
+      return found;
+    };
+
+    const [items, returns, adjustments, loans] = await Promise.all([
+      this.prisma.invoiceItem.findMany({
+        where: { productId, invoice: { fake: false } },
+        select: { id: true, qty: true, price: true, invoice: { select: { id: true, kind: true, date: true } } },
+      }),
+      this.prisma.returnItem.findMany({
+        where: { productId },
+        select: { qty: true, return: { select: { kind: true, date: true } } },
+      }),
+      this.prisma.adjustment.findMany({ where: { productId }, select: { qty: true, date: true } }),
+      this.prisma.loan.findMany({ where: { productId }, select: { qty: true, returnedQty: true, date: true } }),
+    ]);
+    const events: { at: Date; qty: number; saleItemId?: number; purchaseInvoiceId?: number; free?: boolean }[] = [];
+    for (const it of items) {
+      if (it.invoice.kind === 'PURCHASE') events.push({ at: it.invoice.date, qty: it.qty, purchaseInvoiceId: it.invoice.id, free: !(it.price > 0) });
+      else events.push({ at: it.invoice.date, qty: -it.qty, saleItemId: it.id });
+    }
+    for (const it of returns) events.push({ at: it.return.date, qty: it.return.kind === 'SALE' ? it.qty : -it.qty });
+    for (const a of adjustments) events.push({ at: a.date, qty: a.qty });
+    for (const l of loans) events.push({ at: l.date, qty: (l.returnedQty ?? 0) - l.qty });
+    events.sort((a, b) => a.at.getTime() - b.at.getTime() || b.qty - a.qty);
+
+    const lines = new Map<number, { qty: number; cost: number; pendingQty: number }>();
+    // المتوسط بعد كل حركة — costAt(تاريخ) للمرتجعات في التقارير.
+    const history: { at: Date; avg: number | null }[] = [];
+    let stock = 0;
+    let avg: number | null = null;
+    for (const e of events) {
+      if (e.saleItemId != null) {
+        const sold = -e.qty;
+        const covered = Math.max(0, Math.min(sold, stock));
+        const short = sold - covered;
+        const coveredUnit = avg ?? firstAfter(e.at);
+        const shortUnit = firstAfter(e.at);
+        lines.set(e.saleItemId, {
+          qty: (coveredUnit == null ? 0 : covered) + (shortUnit == null ? 0 : short),
+          cost: covered * (coveredUnit ?? 0) + short * (shortUnit ?? 0),
+          pendingQty: (coveredUnit == null ? covered : 0) + (shortUnit == null ? short : 0),
+        });
+      } else if (e.purchaseInvoiceId != null && e.qty > 0) {
+        // فاتورة دولار لسه ما اتسعّرتش من الوكيل: بتدخل بالمتوسط الحالي لحد التسعير.
+        // البند المجاني بيزوّد الكمية بتكلفة صفر (تكلفة الفاتورة كلها على البنود المسعّرة).
+        const unit = e.free ? 0 : unitOf.get(e.purchaseInvoiceId) ?? avg;
+        if (unit != null) avg = stock > 0 && avg != null ? (stock * avg + e.qty * unit) / (stock + e.qty) : unit;
+      }
+      stock += e.qty;
+      history.push({ at: e.at, avg });
+    }
+    const costAt = (d: Date) => {
+      let v: number | null = null;
+      for (const h of history) { if (h.at <= d) v = h.avg; else break; }
+      return v ?? firstAfter(d);
+    };
+    return { lines, costAt, avg };
   }
 
   async warehouseStock(warehouseId: number) {
@@ -198,10 +287,8 @@ export class BalancesRepository {
     const rows = await Promise.all(
       products.map(async (p) => {
         const qty = await this.stockOf(p.id, warehouseId);
-        // A manually-set price (from the product's own settings) overrides the
-        // computed weighted-average purchase cost — lets you value stock directly
-        // instead of relying on purchase-invoice history (which may not exist yet).
-        const cost = p.price > 0 ? p.price : await this.avgCost(p.id, fifo);
+        // متوسط سعر الشراء المرجّح؛ سعر التقييم اليدوي بس للصنف اللي مالوش فواتير شراء.
+        const cost = await this.unitCost(p.id, fifo);
         // سعر الشراء/البيع الثابت بيتبعت مع الرصيد عشان يتعرض ويتعدّل من شاشة
         // المخازن على طول — هما نفسهم اللي بيتحطّوا تلقائيًا في سطر الفاتورة.
         return {

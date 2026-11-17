@@ -36,7 +36,7 @@ export class ReportsService {
   private async expenseRows(from?: string, to?: string) {
     const date = this.range(from, to);
     return this.prisma.transaction.findMany({
-      // الناولون المحمّل على صنف داخل تكلفته (avgCost)، فلا يُحسب مصروفاً مرة ثانية.
+      // الناولون المحمّل على صنف داخل تكلفته (unitCost)، فلا يُحسب مصروفاً مرة ثانية.
       where: { type: { in: EXPENSE_TYPES }, freightInvoiceId: null, ...(date ? { date } : {}) },
       select: {
         type: true, activity: true, shippingPct: true, manifestId: true,
@@ -47,39 +47,32 @@ export class ReportsService {
   }
 
   /**
-   * تقرير التجارة: مبيعات الأصناف، تكلفتها، ربح التجارة، والمخزون.
-   * التكلفة = الكمية المباعة × متوسط تكلفة الصنف (شامل الناولون الداخلي والشاي والعمولة)،
-   * أو سعر التقييم اليدوي لو متحدد على الصنف — نفس تقييم المخزون.
+   * تكلفة بضاعة فواتير البيع في الفترة بمتوسط سعر الشراء المرجّح وقت البيع (balances.saleCosting).
+   * سعر التقييم اليدوي مابيدخلش هنا. الكمية اللي اتباعت ولسه ما اتشرتش، بيعها وتكلفتها بره
+   * الأرقام لحد الشراء، وبترجع لوحدها أول ما فاتورة الشراء تتسجل.
    */
-  async tradeReport(from?: string, to?: string) {
-    // مستحقات التصفية الثابتة جزء من تكلفة الأصناف — تتحدّث الأول عشان تعديلات الفواتير توصل
-    await this.settlement.syncAllFixed();
+  private async goodsCosting(from?: string, to?: string) {
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
       where: { fake: false, ...(date ? { date } : {}) },
       select: {
         kind: true, discount: true,
-        items: { select: { qty: true, price: true, productId: true, product: { select: { uid: true, name: true, unit: true, service: true } } } },
+        items: { select: { id: true, qty: true, price: true, productId: true, product: { select: { uid: true, name: true, unit: true, service: true } } } },
       },
     });
     const returns = await this.prisma.return.findMany({
       where: date ? { date } : {},
-      select: { kind: true, items: { select: { qty: true, price: true, productId: true, product: { select: { service: true } } } } },
+      select: { kind: true, date: true, items: { select: { qty: true, price: true, productId: true, product: { select: { service: true } } } } },
     });
-
-    // متوسط التكلفة لكل صنف اتباع في الفترة — مرة واحدة لكل صنف.
-    const products = await this.prisma.product.findMany({ where: { service: false }, select: { id: true, price: true } });
-    const manual = new Map(products.map((p) => [p.id, p.price]));
-    const costCache = new Map<number, number>();
-    const unitCost = async (productId: number) => {
-      if (!costCache.has(productId)) {
-        const m = manual.get(productId) ?? 0;
-        costCache.set(productId, m > 0 ? m : await this.balances.avgCost(productId));
-      }
-      return costCache.get(productId)!;
+    const fifo = await this.balances.usdFifo();
+    const costings = new Map<number, Awaited<ReturnType<BalancesService['saleCosting']>>>();
+    const costingOf = async (productId: number) => {
+      if (!costings.has(productId)) costings.set(productId, await this.balances.saleCosting(productId, fifo));
+      return costings.get(productId)!;
     };
 
     let sales = 0, salesDiscount = 0, cogs = 0, purchases = 0, salesCount = 0;
+    let pendingSales = 0, salesAwaitingPurchase = 0;
     const byProduct = new Map<string, { name: string; unit: string | null; qty: number; sales: number; cost: number }>();
     for (const inv of invoices) {
       const goods = inv.items.filter((it) => !it.product?.service);
@@ -88,17 +81,49 @@ export class ReportsService {
       const disc = Math.min(inv.discount || 0, total);
       if (inv.kind === InvoiceKind.PURCHASE) { purchases += total - disc; continue; }
       if (goods.length) salesCount += 1;
-      sales += total;
-      salesDiscount += disc;
+      let pendingHere = 0;
       for (const it of goods) {
-        const c = it.qty * (await unitCost(it.productId));
-        cogs += c;
+        const line = (await costingOf(it.productId)).lines.get(it.id) ?? { qty: 0, cost: 0, pendingQty: it.qty };
+        pendingHere += line.pendingQty * it.price;
+        if (line.qty <= 0) continue;
+        sales += line.qty * it.price;
+        cogs += line.cost;
         const key = it.product.uid;
         const row = byProduct.get(key) ?? { name: it.product.name, unit: it.product.unit, qty: 0, sales: 0, cost: 0 };
-        row.qty += it.qty; row.sales += it.qty * it.price; row.cost += c;
+        row.qty += line.qty; row.sales += line.qty * it.price; row.cost += line.cost;
         byProduct.set(key, row);
       }
+      if (pendingHere > 0) { salesAwaitingPurchase += 1; pendingSales += pendingHere; }
+      // خصم الجزء المستني شراء يتحسب معاه بعد الشراء.
+      salesDiscount += total > 0 ? disc * (1 - pendingHere / total) : 0;
     }
+
+    let salesReturns = 0, returnsCost = 0, pendingReturns = 0;
+    for (const r of returns) {
+      if (r.kind !== InvoiceKind.SALE) continue;
+      for (const it of r.items) {
+        if (it.product?.service) continue;
+        const unit = (await costingOf(it.productId)).costAt(r.date);
+        if (unit == null) { pendingReturns += it.qty * it.price; continue; }
+        salesReturns += it.qty * it.price;
+        returnsCost += it.qty * unit;
+      }
+    }
+    return { sales, salesDiscount, cogs, purchases, salesCount, byProduct, salesReturns, returnsCost, pendingSales, pendingReturns, salesAwaitingPurchase };
+  }
+
+  /**
+   * تقرير التجارة: مبيعات الأصناف، تكلفتها، ربح التجارة، والمخزون.
+   * التكلفة من goodsCosting: آخر سعر شراء للصنف لحد تاريخ البيع (شامل الناولون الداخلي والشاي والعمولة)،
+   * أو سعر التقييم اليدوي لو متحدد على الصنف — نفس تقييم المخزون.
+   */
+  async tradeReport(from?: string, to?: string) {
+    // مستحقات التصفية الثابتة جزء من تكلفة الأصناف — تتحدّث الأول عشان تعديلات الفواتير توصل
+    await this.settlement.syncAllFixed();
+    const date = this.range(from, to);
+    const costing = await this.goodsCosting(from, to);
+    let { sales, cogs, purchases, salesCount } = costing;
+    const { salesDiscount, byProduct, salesReturns, returnsCost, salesAwaitingPurchase } = costing;
     // البيع الخارجي: أصنافه تجارة زي فاتورة البيع، وتكلفتها سعر الشراء من المورد (بالجنيه)
     // + الشاي والعمولة على البند. الناولون بيتحسب هنا لو العملية مش على عربية — لو على
     // عربية بيتخصم من ربح العربية في تقرير الشحن، فمايتحسبش مرتين.
@@ -142,7 +167,7 @@ export class ReportsService {
     }
 
     // مستحقات التصفية الثابتة على أصناف البيع الخارجي: جزء من تكلفة الصنف في العملية.
-    // (أصناف فواتير الشراء مستحقها داخل متوسط التكلفة نفسه — balances.avgCost.)
+    // (أصناف فواتير الشراء مستحقها داخل تكلفة آخر شراء نفسها — balances.unitCost.)
     const dealDues = await this.prisma.transaction.findMany({
       where: { type: LEDGER_TYPES.due, partnerItem: { is: { deal: { is: date ? { date } : {} } } } },
       select: { credit: true, debit: true, partnerItem: { select: { product: { select: { uid: true, name: true, unit: true } } } } },
@@ -155,16 +180,6 @@ export class ReportsService {
       const row = byProduct.get(p.uid) ?? { name: p.name, unit: p.unit, qty: 0, sales: 0, cost: 0 };
       row.cost += c;
       byProduct.set(p.uid, row);
-    }
-
-    let salesReturns = 0, returnsCost = 0;
-    for (const r of returns) {
-      if (r.kind !== InvoiceKind.SALE) continue;
-      for (const it of r.items) {
-        if (it.product?.service) continue;
-        salesReturns += it.qty * it.price;
-        returnsCost += it.qty * (await unitCost(it.productId));
-      }
     }
 
     // تكاليف البيع اللي مش داخلة تكلفة الصنف. ناولون وشاي وعمولة بنود الشراء داخلين تكلفة
@@ -237,6 +252,7 @@ export class ReportsService {
       netProfit: grossProfit - saleFreight - commissions + discountsEarned - discountsGiven - tradeExpenses,
       purchases,
       dealsWithoutRate,
+      salesAwaitingPurchase,
       products: [...byProduct.entries()]
         .map(([id, v]) => ({ id, ...v, profit: v.sales - v.cost }))
         .sort((a, b) => b.sales - a.sales),
@@ -496,6 +512,8 @@ export class ReportsService {
   // `sales`/`purchases` هنا بضاعة بس؛ بنود الخدمات بترجع في `services` وتفصيلها في
   // shippingSummary(). أي حاسب تاني (الداشبورد، profitLoss) بياخد أرقام التجارة صح.
   async summary(from?: string, to?: string) {
+    // مستحقات التصفية الثابتة جزء من تكلفة الأصناف — تتحدّث الأول عشان تعديلات الفواتير توصل
+    await this.settlement.syncAllFixed();
     const date = this.range(from, to);
     const invoices = await this.prisma.invoice.findMany({
       where: { fake: false, ...(date ? { date } : {}) },
@@ -540,14 +558,19 @@ export class ReportsService {
       const total = r.items.reduce((s, it) => (it.product?.service ? s : s + it.qty * it.price), 0);
       if (r.kind === InvoiceKind.SALE) salesReturns += total; else purchaseReturns += total;
     }
+    // المكسب = البضاعة طلعت بكام − جت بكام (آخر سعر شراء)، مش مبيعات الفترة − مشترياتها.
+    const costing = await this.goodsCosting(from, to);
+    const pendingNet = costing.pendingSales - costing.pendingReturns;
+    const goodsCost = costing.cogs - costing.returnsCost;
     return {
+      goodsCost, pendingNet, salesAwaitingPurchase: costing.salesAwaitingPurchase,
       sales, purchases, salesCount, purchasesCount,
       salesReturns, purchaseReturns,
       addedCosts,
       // تكلفة البضاعة الحقيقية عليك = سعر الشراء + الناولون الداخلي + الشاي
       landedPurchases: purchases + addedCosts,
       netSales: sales - salesReturns,
-      grossProfit: (sales - salesReturns) - (purchases + addedCosts - purchaseReturns),
+      grossProfit: (sales - salesReturns - pendingNet) - goodsCost,
       services: { collected: servicesCollected, paid: servicesPaid },
     };
   }

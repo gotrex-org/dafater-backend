@@ -206,13 +206,15 @@ export class InvoicesService {
     }
   }
 
-  create(dto: CreateInvoiceDto, createdById?: number) {
+  async create(dto: CreateInvoiceDto, createdById?: number) {
     this.assertTreasuryForExtras(dto);
     const { itemsTotal, chargesTotal, total } = this.totals(dto);
     const paid = dto.paid || 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
     const isSale = dto.kind === InvoiceKind.SALE;
-    return this.repo.create(dto, { itemsTotal, chargesTotal, paid, discount, isSale, createdById });
+    const inv = await this.repo.create(dto, { itemsTotal, chargesTotal, paid, discount, isSale, createdById });
+    if (inv) await this.repo.syncLastPrices(await this.repo.productIdsOf(inv.uid));
+    return inv;
   }
 
   // نفس فحوصات التعديل من غير ما يتسجّل — لتعديل غير المالك قبل ما يستنى الموافقة
@@ -221,12 +223,16 @@ export class InvoicesService {
     this.totals(dto);
   }
 
-  update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
+  async update(id: string, dto: UpdateInvoiceDto, createdById?: number) {
     this.assertTreasuryForExtras(dto);
     const { itemsTotal, chargesTotal, total } = this.totals(dto);
     const paid = dto.paid ?? 0;
     const discount = dto.discount && dto.discount > 0 ? Math.min(dto.discount, total) : 0;
-    return this.repo.update(id, dto, { itemsTotal, chargesTotal, paid, discount, createdById });
+    // أصناف الفاتورة قبل وبعد التعديل — صنف اتشال منها ممكن آخر سعر له يتغيّر.
+    const before = await this.repo.productIdsOf(id);
+    const inv = await this.repo.update(id, dto, { itemsTotal, chargesTotal, paid, discount, createdById });
+    await this.repo.syncLastPrices([...new Set([...before, ...(await this.repo.productIdsOf(id))])]);
+    return inv;
   }
 
   // إجمالي الفاتورة = إجمالي الأصناف (تجارة) + إجمالي بنود الشحن (شحن).
@@ -250,7 +256,10 @@ export class InvoicesService {
         throw new ConflictException(`يوجد ${related} حركة مالية مرتبطة بهذه الفاتورة — أكّد حذفها معها لحذف الفاتورة`);
       }
     }
-    return this.repo.remove(id);
+    const products = await this.repo.productIdsOf(id);
+    const res = await this.repo.remove(id);
+    await this.repo.syncLastPrices(products);
+    return res;
   }
 
   peekNextNo(partyUid: string) { return this.repo.peekNextNo(partyUid); }

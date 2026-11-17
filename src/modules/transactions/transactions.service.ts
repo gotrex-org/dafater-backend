@@ -419,7 +419,7 @@ export class TransactionsService {
   }
 
   // صرف نقدية على بضاعة — يوزّع المبلغ على بنود شراء الأصناف المختارة عن طريق زيادة
-  // "الناولون" (freight) بتاعها، وده بيرفع صافي سعر التكلفة (avgCost) للأصناف دي.
+  // "الناولون" (freight) بتاعها، وده بيرفع صافي سعر التكلفة (unitCost) للأصناف دي.
   // بيرجّع وصف مختصر للتوزيع (للـ audit). لا يؤثر على رصيد الطرف ولا إجمالي الفاتورة.
   private async distributeGoodsCost(dto: PostEntryDto, amt: number, sign: number): Promise<string> {
     const mode = dto.goodsMode;
@@ -436,10 +436,10 @@ export class TransactionsService {
     } else if ((mode === 'products' || mode === 'count') && dto.goodsItems?.length) {
       for (const gi of dto.goodsItems) {
         if (!gi?.productId) continue;
-        // آخر بند شراء للصنف — avgCost بيجمع الناولون على كل البنود فمكانه مش فارق.
+        // آخر بند شراء للصنف، لأن التكلفة (unitCost) بتتحسب من آخر فاتورة شراء.
         const item = await this.prisma.invoiceItem.findFirst({
           where: { product: { uid: gi.productId }, invoice: { kind: 'PURCHASE', fake: false } },
-          orderBy: { invoice: { date: 'desc' } },
+          orderBy: [{ invoice: { date: 'desc' } }, { id: 'desc' }],
           select: { id: true },
         });
         if (item) targets.push({ itemId: item.id, weight: mode === 'count' ? (gi.count && gi.count > 0 ? gi.count : 1) : 1 });

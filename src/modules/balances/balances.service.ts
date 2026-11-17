@@ -1,3 +1,4 @@
+import type { FifoResult } from '../../common/usd-fifo';
 import { Injectable } from '@nestjs/common';
 import { BalancesRepository } from './balances.repository';
 
@@ -13,7 +14,8 @@ export class BalancesService {
   allTreasuryBalances() { return this.repo.allTreasuryBalances(); }
   /** من غير مخزن = الإجمالي الموجود في كل المخازن */
   stockOf(productId: number, warehouseId?: number) { return this.repo.stockOf(productId, warehouseId); }
-  avgCost(productId: number) { return this.repo.avgCost(productId); }
+  unitCost(productId: number, fifo?: FifoResult) { return this.repo.unitCost(productId, fifo); }
+  saleCosting(productId: number, fifo?: FifoResult) { return this.repo.saleCosting(productId, fifo); }
   usdFifo() { return this.repo.usdFifo(); }
   warehouseStock(warehouseId: number) { return this.repo.warehouseStock(warehouseId); }
   warehouseValue(warehouseId: number) { return this.repo.warehouseValue(warehouseId); }

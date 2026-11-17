@@ -380,6 +380,28 @@ export class InvoicesRepository {
     return this.prisma.transaction.count({ where: { invoiceId: id } });
   }
 
+  async productIdsOf(uid: string): Promise<number[]> {
+    const items = await this.prisma.invoiceItem.findMany({ where: { invoice: { uid } }, select: { productId: true } });
+    return [...new Set(items.map((i) => i.productId))];
+  }
+
+  /**
+   * سعر الشراء والبيع اللي بيتحط تلقائياً في سطر الفاتورة الجاية = سعر الصنف في آخر فاتورة
+   * شراء/بيع بالجنيه. بيتحدّث بعد أي إضافة أو تعديل أو حذف؛ لو مفيش فاتورة السعر زي ما هو.
+   */
+  async syncLastPrices(productIds: number[]) {
+    for (const productId of productIds) {
+      const last = (kind: InvoiceKind) => this.prisma.invoiceItem.findFirst({
+        where: { productId, price: { gt: 0 }, invoice: { kind, fake: false, currency: 'EGP' } },
+        orderBy: [{ invoice: { date: 'desc' } }, { invoiceId: 'desc' }, { id: 'desc' }],
+        select: { price: true },
+      });
+      const [buy, sell] = await Promise.all([last(InvoiceKind.PURCHASE), last(InvoiceKind.SALE)]);
+      const data = { ...(buy ? { purchasePrice: buy.price } : {}), ...(sell ? { salePrice: sell.price } : {}) };
+      if (Object.keys(data).length) await this.prisma.product.update({ where: { id: productId }, data });
+    }
+  }
+
   remove(id: string) {
     return this.prisma.invoice.delete({ where: { uid: id } });
   }
