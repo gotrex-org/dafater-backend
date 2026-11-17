@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InvoiceKind } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { agentRates } from '../../common/agent-rate';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { paginate } from '../../common/pagination';
 import { CreateProductDto, UpdateProductDto } from './dto/products.dto';
@@ -34,17 +35,36 @@ export class ProductsRepository {
   async movements(uid: string) {
     const product = await this.prisma.product.findUnique({ where: { uid }, select: { id: true } });
     if (!product) return [];
-    const [items, dealItems] = await Promise.all([
+    // كارت الصنف: كل اللي بيحرّك رصيده (عشان «الرصيد بعدها» يطلع زي رصيد المخزن)،
+    // وسعر الوكيل لتحويل الحركات بالدولار للمصري.
+    const [items, dealItems, returnItems, adjustments, loans, rates] = await Promise.all([
       this.prisma.invoiceItem.findMany({
         where: { productId: product.id },
         include: { invoice: { include: { party: true, warehouse: true } } },
       }),
       this.prisma.dealItem.findMany({
         where: { productId: product.id },
-        include: { deal: { include: { supplier: true, client: true } } },
+        include: {
+          deal: {
+            include: {
+              supplier: true, client: true,
+              transactions: { where: { type: 'شراء خارجي' }, select: { id: true } },
+            },
+          },
+        },
       }),
+      this.prisma.returnItem.findMany({
+        where: { productId: product.id },
+        include: { return: { include: { party: true, warehouse: true } } },
+      }),
+      this.prisma.adjustment.findMany({ where: { productId: product.id }, include: { warehouse: true } }),
+      this.prisma.loan.findMany({
+        where: { productId: product.id },
+        include: { party: true, warehouse: true, returns: { where: { returnType: 'GOODS' } } },
+      }),
+      agentRates(this.prisma),
     ]);
-    return { items, dealItems };
+    return { items, dealItems, returnItems, adjustments, loans, rates };
   }
 
   // Most recent invoice-item price per product, for a given invoice kind — shown as

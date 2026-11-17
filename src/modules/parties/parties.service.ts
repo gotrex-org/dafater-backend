@@ -145,7 +145,7 @@ export class PartiesService {
         // بنود الشحن على الفاتورة (نولون/تحميل…) — وجود بند ناولون معناه إن البضاعة
         // اتشحنت من عندنا مش من شركة شحن، والبورتال بيميّز اليوم ده.
         invoiceCharges: shipDoc
-          ? shipDoc.charges.map((c: any) => ({ name: c.chargeType?.name ?? '', amount: (c.qty ?? 1) * c.price }))
+          ? shipDoc.charges.map((c: any) => ({ name: c.chargeType?.name ?? '', qty: c.qty ?? 1, price: c.price, amount: (c.qty ?? 1) * c.price }))
           : null,
         shipped: !!shipDoc && shipDoc.charges.some((c: any) => /نا?ولون/.test(c.chargeType?.name ?? '')),
         invoiceItems: t.invoice
